@@ -25,6 +25,12 @@ class CandidateCapture {
         this.silenceCheckInterval = null;
     }
 
+    resetCalibration() {
+        this.calibrationSamples = [];
+        this.isCalibrated = false;
+        console.log("[Gaze Calibration] Baseline reset. Recalibrating...");
+    }
+
     initConsentModal(onConsentCallback) {
         const modalHtml = `
             <div id="consent-modal" class="modal-overlay">

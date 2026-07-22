@@ -176,6 +176,7 @@
             const wave = document.getElementById("tts-wave");
 
             btnStart.addEventListener("click", () => {
+                captureEngine.resetCalibration();
                 wsClient.send({ type: "start_interview" });
                 btnStart.style.display = "none";
             });
