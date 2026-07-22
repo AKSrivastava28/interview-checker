@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IntegrityGuard AI — Mock Interview Portal</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+
+    <!-- MediaPipe FaceMesh for client-side gaze estimation -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <span>🛡️ IntegrityGuard AI</span>
+            <span class="logo-badge">Candidate Portal</span>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Landing State -->
+        <section id="landing-view" class="hero">
+            <h1>Catch the Invisible AI Cheater</h1>
+            <p>
+                A zero-install proctoring prototype. Let the AI conduct a live technical mock interview while we evaluate speech delays, gaze patterns, and focus telemetry.
+            </p>
+
+            <div class="action-card">
+                <button id="btn-create-session" class="btn btn-primary" style="width: 100%; font-size: 1.1rem; padding: 1rem;">
+                    🚀 Create Mock Interview Session
+                </button>
+
+                <div id="session-links-container" class="links-container" style="display: none;">
+                    <div style="font-weight: 600; font-size: 0.95rem; margin-top: 0.5rem; color: var(--accent-blue); text-align: center;">
+                        Session Configured Successfully!
+                    </div>
+                    
+                    <div style="background: rgba(56, 189, 248, 0.05); border: 1px dashed var(--accent-blue); padding: 1rem; border-radius: 8px; font-size: 0.85rem; margin: 0.5rem 0;">
+                        💡 <strong>How to test:</strong> Open the Reviewer Dashboard link below in a <strong>separate browser tab</strong> or side-by-side window, then click "Enter Candidate Interview" to begin.
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.8rem; color: var(--text-secondary);">Reviewer Dashboard Link (Open in Tab 2):</label>
+                        <div class="link-box">
+                            <span id="dashboard-link-text"></span>
+                            <button class="btn btn-secondary" onclick="copyLink('dashboard-link-text')" style="padding: 4px 8px; font-size: 0.75rem;">Copy</button>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                        <a id="btn-open-dashboard" href="#" target="_blank" class="btn btn-primary" style="flex: 1;">Open Reviewer Dashboard</a>
+                        <button id="btn-enter-interview" class="btn btn-secondary" style="flex: 1;">Enter Candidate Interview</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Interview UI Terminal State -->
+        <section id="interview-view" style="display: none;">
+            <div class="interview-terminal">
+                <div class="terminal-header">
+                    <div class="terminal-title">🤖 INTEGRITYGUARD_AI_INTERVIEWER.EXE</div>
+                    <div id="question-number" style="font-size: 0.85rem; color: var(--text-secondary);">Question 0 of 5</div>
+                </div>
+
+                <div class="terminal-body">
+                    <div id="interviewer-avatar" class="interviewer-avatar">🤖</div>
+                    
+                    <div id="question-text" class="question-display">
+                        Click "Start Interview" to begin your mock session.
+                    </div>
+
+                    <div id="tts-wave" class="audio-wave">
+                        <div class="audio-bar"></div>
+                        <div class="audio-bar"></div>
+                        <div class="audio-bar"></div>
+                        <div class="audio-bar"></div>
+                        <div class="audio-bar"></div>
+                    </div>
+
+                    <div id="live-transcript" class="live-transcript-box">
+                        Your spoken response will be transcribed here in real time...
+                    </div>
+                </div>
+
+                <div style="display: flex; justify-content: center; gap: 1rem;">
+                    <button id="btn-start-interview" class="btn btn-primary">Start Interview</button>
+                    <button id="btn-done-answering" class="btn btn-secondary" style="display: none;">Done Answering (or wait for 3s silence)</button>
+                </div>
+            </div>
+
+            <!-- Client Camera Preview Bubble (Bottom Right) -->
+            <div class="camera-bubble">
+                <video id="preview-video" autoplay playsinline muted></video>
+            </div>
+        </section>
+    </main>
+
+    <!-- JS modules -->
+    <script src="/static/js/websocket-client.js"></script>
+    <script src="/static/js/interviewer-ui.js"></script>
+    <script src="/static/js/candidate-capture.js"></script>
+
+    <script>
+        let sessionId = null;
+        let wsClient = null;
+        let voiceEngine = null;
+        let captureEngine = null;
+
+        document.addEventListener("DOMContentLoaded", () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            sessionId = urlParams.get("session_id");
+
+            if (sessionId) {
+                showInterviewUI();
+            } else {
+                showLandingUI();
+            }
+        });
+
+        function showLandingUI() {
+            document.getElementById('landing-view').style.display = 'block';
+            document.getElementById('interview-view').style.display = 'none';
+
+            document.getElementById('btn-create-session').addEventListener('click', async () => {
+                const btn = document.getElementById('btn-create-session');
+                btn.disabled = true;
+                btn.textContent = "Setting up Session...";
+
+                try {
+                    const resp = await fetch('/api/sessions', { method: 'POST' });
+                    const data = await resp.json();
+
+                    const origin = window.location.origin;
+                    const dashUrl = origin + data.dashboard_url;
+                    
+                    sessionId = data.session_id;
+
+                    document.getElementById('dashboard-link-text').textContent = dashUrl;
+                    document.getElementById('btn-open-dashboard').href = dashUrl;
+
+                    document.getElementById('session-links-container').style.display = 'flex';
+                    btn.style.display = 'none';
+                } catch (err) {
+                    alert("Failed to initialize session: " + err.message);
+                    btn.disabled = false;
+                    btn.textContent = "🚀 Create Mock Interview Session";
+                }
+            });
+
+            document.getElementById('btn-enter-interview').addEventListener('click', () => {
+                if (sessionId) {
+                    window.location.search = `?session_id=${sessionId}`;
+                }
+            });
+        }
+
+        function showInterviewUI() {
+            document.getElementById('landing-view').style.display = 'none';
+            document.getElementById('interview-view').style.display = 'block';
+
+            // Connect Websocket
+            wsClient = new IntegrityWebSocketClient(sessionId, "candidate");
+            wsClient.connect();
+
+            voiceEngine = new InterviewerVoice();
+            captureEngine = new CandidateCapture(wsClient, voiceEngine);
+
+            // Initialize Consent Screen gating camera/mic
+            captureEngine.initConsentModal();
+
+            // Set up interview start flow
+            const btnStart = document.getElementById("btn-start-interview");
+            const btnDone = document.getElementById("btn-done-answering");
+            const wave = document.getElementById("tts-wave");
+
+            btnStart.addEventListener("click", () => {
+                wsClient.send({ type: "start_interview" });
+                btnStart.style.display = "none";
+            });
+
+            btnDone.addEventListener("click", () => {
+                captureEngine.triggerDoneAnswering();
+            });
+
+            // WebSocket Events
+            wsClient.on("new_question", (data) => {
+                const maxQ = data.max_questions || 5;
+                document.getElementById("question-number").textContent = `Question ${data.question_n} of ${maxQ}`;
+                document.getElementById("question-text").textContent = data.question_text;
+                
+                // Activate TTS Wave
+                wave.classList.add("active");
+                
+                // Speak question aloud
+                voiceEngine.speak(data.question_text, 
+                    // onStart:
+                    () => {
+                        wsClient.send({ type: "question_speaking_started" });
+                    },
+                    // onEnd:
+                    () => {
+                        wave.classList.remove("active");
+                        wsClient.send({ type: "question_speaking_finished" });
+                        captureEngine.startAnswerWindow();
+                        btnDone.style.display = "inline-flex";
+                    }
+                );
+            });
+
+            let isInterviewComplete = false;
+
+            wsClient.on("question_evaluated", (data) => {
+                if (isInterviewComplete) return;
+                btnDone.style.display = "none";
+                document.getElementById("question-text").textContent = "Preparing next question...";
+                document.getElementById("live-transcript").textContent = "Response evaluated. Awaiting next question...";
+            });
+
+            wsClient.on("interview_complete", () => {
+                isInterviewComplete = true;
+                btnDone.style.display = "none";
+                voiceEngine.stop();
+                document.getElementById("question-text").textContent = "Mock Interview Complete!";
+                document.getElementById("live-transcript").innerHTML = `
+                    Thank you for participating. Your integrity report has been generated.<br>
+                    <a href="/report/${sessionId}" target="_blank" class="btn btn-primary" style="margin-top:1rem;">View Audit Report</a>
+                `;
+            });
+        }
+
+        function copyLink(elemId) {
+            const text = document.getElementById(elemId).textContent;
+            navigator.clipboard.writeText(text);
+            alert("Reviewer link copied!");
+        }
+    </script>
+</body>
+</html>

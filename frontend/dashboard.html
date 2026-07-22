@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IntegrityGuard AI — Reviewer Dashboard</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <span>🛡️ IntegrityGuard AI</span>
+            <span class="logo-badge">Reviewer Console</span>
+        </div>
+        <div>
+            <button id="btn-view-report" class="btn btn-secondary">📄 View Audit Report</button>
+        </div>
+    </header>
+
+    <main class="container" style="max-width: 1400px;">
+        <div class="dashboard-grid">
+            <!-- Sidebar Panel -->
+            <aside class="dashboard-sidebar">
+                <div class="sidebar-section">
+                    <h3 style="margin-bottom: 0.75rem; font-size: 1.1rem; color: var(--accent-blue);">Session Metadata</h3>
+                    
+                    <div class="status-row">
+                        <span style="font-size: 0.9rem; color: var(--text-secondary);">Session ID:</span>
+                        <strong id="session-id-val" style="font-family: monospace;">-</strong>
+                    </div>
+                    
+                    <div class="status-row">
+                        <span style="font-size: 0.9rem; color: var(--text-secondary);">Status:</span>
+                        <div>
+                            <span id="candidate-status-dot" class="status-dot offline"></span>
+                            <span id="candidate-status-label" style="font-size: 0.9rem; font-weight: 500;">Offline</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 style="margin-bottom: 0.75rem; font-size: 1.1rem; color: var(--accent-blue);">Current Progress</h3>
+                    <div id="current-question-title" style="font-size: 0.95rem; font-weight: 500; line-height: 1.5; color: var(--text-primary);">
+                        Waiting for candidate to start...
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 style="margin-bottom: 0.5rem; font-size: 1.1rem; color: var(--accent-blue);">Telemetry Zones</h3>
+                    <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+                        Checks: <br>
+                        • Speech Delay (&gt; 4.0s indicates query retrieval delay)<br>
+                        • Offscreen Gaze (&gt; 35% indicates dual display read)<br>
+                        • Tab blur (shows focus departure)<br>
+                        • Grok AI score (flags textbook-fluent content)
+                    </p>
+                </div>
+            </aside>
+
+            <!-- Main Evidence feed list -->
+            <section style="display: flex; flex-direction: column; gap: 1rem;">
+                <h2 style="font-size: 1.4rem; color: var(--text-primary); border-bottom: 1px solid var(--card-border); padding-bottom: 0.5rem;">
+                    Live Question Telemetry Feed
+                </h2>
+                
+                <div id="evidence-list" class="evidence-feed">
+                    <div id="empty-evidence-state" style="text-align: center; padding: 5rem 1rem; color: var(--text-secondary); background: rgba(255,255,255,0.02); border-radius:16px; border:1px dashed var(--card-border);">
+                        <span style="font-size: 2.5rem; display: block; margin-bottom: 1rem;">📡</span>
+                        Awaiting telemetry stream...<br>Once the candidate answers a question, live metrics will propagate here.
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- JS scripts -->
+    <script src="/static/js/websocket-client.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sessionId = urlParams.get("session_id");
+
+            if (!sessionId) {
+                alert("Missing session_id.");
+                window.location.href = "/";
+                return;
+            }
+
+            document.getElementById("session-id-val").textContent = sessionId;
+
+            // Connect Websocket as dashboard
+            const wsClient = new IntegrityWebSocketClient(sessionId, "dashboard");
+            wsClient.connect();
+
+            const dashboard = new ReviewerDashboard(wsClient, sessionId);
+            dashboard.init();
+        });
+    </script>
+</body>
+</html>
