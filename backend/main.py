@@ -37,7 +37,7 @@ gaze_analyzer = GazeAnalyzer()
 ai_scorer = AILikenessScorer()
 
 # Configure total questions limit (2 for testing, 5 for final demo)
-MAX_QUESTIONS = 2
+MAX_QUESTIONS = 3
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
