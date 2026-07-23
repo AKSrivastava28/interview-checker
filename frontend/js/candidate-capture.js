@@ -125,7 +125,7 @@ class CandidateCapture {
                                 // If calibration is not complete, gather baseline samples (assumes candidate looks straight at start)
                                 if (!this.isCalibrated) {
                                     this.calibrationSamples.push({ x: relX, y: relY });
-                                    if (this.calibrationSamples.length >= 15) {
+                                    if (this.calibrationSamples.length >= 50) {
                                         const sumX = this.calibrationSamples.reduce((sum, s) => sum + s.x, 0);
                                         const sumY = this.calibrationSamples.reduce((sum, s) => sum + s.y, 0);
                                         this.calibratedX = sumX / this.calibrationSamples.length;
@@ -135,9 +135,9 @@ class CandidateCapture {
                                     }
                                 }
 
-                                // Apply calibration offsets to normalize straight gaze to 0.5
-                                const mappedX = 0.5 + (relX - this.calibratedX);
-                                const mappedY = 0.5 + (relY - this.calibratedY);
+                                // Apply calibration offsets with scaling filters to reduce high sensitivity to blinks/reading shifts
+                                const mappedX = 0.5 + (relX - this.calibratedX) * 0.7;
+                                const mappedY = 0.5 + (relY - this.calibratedY) * 0.5;
 
                                 // Clamp values between 0.0 and 1.0
                                 this.latestGazeCoords = {
