@@ -42,7 +42,8 @@ class SessionState:
 
     def add_transcript(self, text: str, is_final: bool, ts: float):
         if self.current_window:
-            self.current_window.transcript_chunks.append({"text": text, "is_final": is_final, "ts": ts})
+            # Store the latest cumulative transcript string directly
+            self.current_window.transcript_chunks = [{"text": text, "is_final": is_final, "ts": ts}]
 
     def add_event(self, name: str, ts: float):
         if self.current_window:

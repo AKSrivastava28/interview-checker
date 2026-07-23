@@ -12,11 +12,14 @@ class CandidateCapture {
         
         this.latestGazeCoords = { x: 0.5, y: 0.5 };
         
-        // Gaze Self-Calibration
+        // Gaze Calibration properties
         this.calibrationSamples = [];
         this.calibratedX = 0.5;
         this.calibratedY = 0.5;
         this.isCalibrated = false;
+        this.isCalibrating = false;
+        this.onCalibrationProgress = null;
+        this.onCalibrationComplete = null;
         
         // Silence detection trackers
         this.isAnswering = false;
@@ -25,13 +28,24 @@ class CandidateCapture {
         this.silenceCheckInterval = null;
     }
 
+    startCalibration(onProgress, onComplete) {
+        this.calibrationSamples = [];
+        this.calibratedX = 0.5;
+        this.calibratedY = 0.5;
+        this.isCalibrated = false;
+        this.onCalibrationProgress = onProgress;
+        this.onCalibrationComplete = onComplete;
+        this.isCalibrating = true;
+        console.log("[Gaze Calibration] Started manual calibration baseline gathering...");
+    }
+
     resetCalibration() {
         this.calibrationSamples = [];
         this.isCalibrated = false;
         console.log("[Gaze Calibration] Baseline reset. Recalibrating...");
     }
 
-    initConsentModal(onConsentCallback) {
+    initConsentModal(onConsentCallback, onCaptureInitialized) {
         const modalHtml = `
             <div id="consent-modal" class="modal-overlay">
                 <div class="modal-content">
@@ -55,6 +69,9 @@ class CandidateCapture {
             this.consentGiven = true;
             if (onConsentCallback) await onConsentCallback();
             await this.startCapture();
+            if (onCaptureInitialized) {
+                await onCaptureInitialized();
+            }
         });
     }
 
@@ -124,9 +141,31 @@ class CandidateCapture {
                                 const relX = 0.5 + (iris.x - centerX) / eyeWidth;
                                 const relY = 0.5 + (iris.y - centerY) / eyeWidth;
 
+                                if (this.isCalibrating) {
+                                    this.calibrationSamples.push({ x: relX, y: relY });
+                                    if (this.onCalibrationProgress) {
+                                        this.onCalibrationProgress(this.calibrationSamples.length);
+                                    }
+                                    if (this.calibrationSamples.length >= 60) {
+                                        const sumX = this.calibrationSamples.reduce((sum, s) => sum + s.x, 0);
+                                        const sumY = this.calibrationSamples.reduce((sum, s) => sum + s.y, 0);
+                                        this.calibratedX = sumX / this.calibrationSamples.length;
+                                        this.calibratedY = sumY / this.calibrationSamples.length;
+                                        this.isCalibrating = false;
+                                        this.isCalibrated = true;
+                                        if (this.onCalibrationComplete) {
+                                            this.onCalibrationComplete();
+                                        }
+                                    }
+                                }
+
+                                // Apply calibration offsets to map the straight gaze exactly to 0.5
+                                const mappedX = 0.5 + (relX - this.calibratedX);
+                                const mappedY = 0.5 + (relY - this.calibratedY);
+
                                 this.latestGazeCoords = {
-                                    x: Math.round(Math.max(0.0, Math.min(1.0, relX)) * 1000) / 1000,
-                                    y: Math.round(Math.max(0.0, Math.min(1.0, relY)) * 1000) / 1000
+                                    x: Math.round(Math.max(0.0, Math.min(1.0, mappedX)) * 1000) / 1000,
+                                    y: Math.round(Math.max(0.0, Math.min(1.0, mappedY)) * 1000) / 1000
                                 };
                                 return;
                             }
@@ -185,28 +224,29 @@ class CandidateCapture {
         this.speechRecognizer.lang = 'en-US';
 
         this.speechRecognizer.onresult = (event) => {
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-                const transcript = event.results[i][0].transcript;
-                const isFinal = event.results[i].isFinal;
+            let fullText = "";
+            for (let i = 0; i < event.results.length; ++i) {
+                fullText += event.results[i][0].transcript + " ";
+            }
+            fullText = fullText.trim();
 
-                // Update transcript UI
-                const transcriptBox = document.getElementById("live-transcript");
-                if (transcriptBox) {
-                    transcriptBox.textContent = transcript;
-                }
+            // Update transcript UI
+            const transcriptBox = document.getElementById("live-transcript");
+            if (transcriptBox) {
+                transcriptBox.textContent = fullText;
+            }
 
-                // If candidate is answering, stream chunks & update silence trackers
-                if (this.isAnswering) {
-                    this.hasSpokenInWindow = true;
-                    this.lastSpeechTimestamp = Date.now();
-                    
-                    this.wsClient.send({
-                        type: "transcript",
-                        text: transcript,
-                        is_final: isFinal,
-                        ts: Date.now() / 1000.0
-                    });
-                }
+            // If candidate is answering, stream chunks & update silence trackers
+            if (this.isAnswering) {
+                this.hasSpokenInWindow = true;
+                this.lastSpeechTimestamp = Date.now();
+                
+                this.wsClient.send({
+                    type: "transcript",
+                    text: fullText,
+                    is_final: event.results[event.results.length - 1].isFinal,
+                    ts: Date.now() / 1000.0
+                });
             }
         };
 
@@ -215,16 +255,32 @@ class CandidateCapture {
         };
 
         this.speechRecognizer.onend = () => {
-            if (this.consentGiven) {
+            // Only restart if candidate is actively answering to prevent background noise buildup
+            if (this.consentGiven && this.isAnswering) {
                 try { this.speechRecognizer.start(); } catch(e){}
             }
         };
+    }
 
-        try {
-            this.speechRecognizer.start();
-            console.log("[Candidate Capture] SpeechRecognition started.");
-        } catch (e) {
-            console.error("[Candidate Capture] Could not start SpeechRecognition:", e);
+    startSpeechRecognition() {
+        if (this.speechRecognizer) {
+            try {
+                this.speechRecognizer.start();
+                console.log("[Candidate Capture] SpeechRecognition started for active answer window.");
+            } catch (e) {
+                console.warn("[Candidate Capture] SpeechRecognition start failed or already active:", e);
+            }
+        }
+    }
+
+    stopSpeechRecognition() {
+        if (this.speechRecognizer) {
+            try {
+                this.speechRecognizer.stop();
+                console.log("[Candidate Capture] SpeechRecognition stopped.");
+            } catch (e) {
+                console.warn("[Candidate Capture] SpeechRecognition stop failed:", e);
+            }
         }
     }
 
@@ -287,11 +343,15 @@ class CandidateCapture {
         // Clear text field
         const transcriptBox = document.getElementById("live-transcript");
         if (transcriptBox) transcriptBox.textContent = "Listening to your response...";
+
+        this.startSpeechRecognition();
     }
 
     triggerDoneAnswering() {
         if (!this.isAnswering) return;
         this.isAnswering = false;
+
+        this.stopSpeechRecognition();
 
         this.wsClient.send({
             type: "done_answering",
