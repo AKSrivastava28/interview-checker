@@ -116,13 +116,14 @@ class CandidateCapture {
 
                         if (leftCorner && rightCorner && topBoundary && bottomBoundary && iris) {
                             const eyeWidth = Math.abs(rightCorner.x - leftCorner.x);
-                            const eyeHeight = Math.abs(bottomBoundary.y - topBoundary.y);
-                            if (eyeWidth > 0 && eyeHeight > 0) {
-                                // Compute raw relative offset inside the eye socket
-                                const relX = (iris.x - Math.min(leftCorner.x, rightCorner.x)) / eyeWidth;
-                                const relY = (iris.y - Math.min(topBoundary.y, bottomBoundary.y)) / eyeHeight;
+                            if (eyeWidth > 0) {
+                                const centerX = (leftCorner.x + rightCorner.x) / 2;
+                                const centerY = (topBoundary.y + bottomBoundary.y) / 2;
 
-                                // Map direct relative eye-socket coordinates (naturally centered around 0.5)
+                                // Normalize both X and Y offsets strictly by the stable eye width (ignores blink height noise)
+                                const relX = 0.5 + (iris.x - centerX) / eyeWidth;
+                                const relY = 0.5 + (iris.y - centerY) / eyeWidth;
+
                                 this.latestGazeCoords = {
                                     x: Math.round(Math.max(0.0, Math.min(1.0, relX)) * 1000) / 1000,
                                     y: Math.round(Math.max(0.0, Math.min(1.0, relY)) * 1000) / 1000
