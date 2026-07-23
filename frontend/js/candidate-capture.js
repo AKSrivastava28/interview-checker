@@ -135,9 +135,9 @@ class CandidateCapture {
                                     }
                                 }
 
-                                // Apply calibration offsets with scaling filters to reduce high sensitivity to blinks/reading shifts
-                                const mappedX = 0.5 + (relX - this.calibratedX) * 0.7;
-                                const mappedY = 0.5 + (relY - this.calibratedY) * 0.5;
+                                // Apply calibration offsets to normalize straight gaze to 0.5
+                                const mappedX = 0.5 + (relX - this.calibratedX);
+                                const mappedY = 0.5 + (relY - this.calibratedY);
 
                                 // Clamp values between 0.0 and 1.0
                                 this.latestGazeCoords = {
@@ -246,27 +246,23 @@ class CandidateCapture {
 
     setupWindowListeners() {
         window.addEventListener('blur', () => {
-            if (this.isAnswering) {
-                this.wsClient.send({
-                    type: "event",
-                    name: "tab_blur",
-                    ts: Date.now() / 1000.0
-                });
-            }
+            this.wsClient.send({
+                type: "event",
+                name: "tab_blur",
+                ts: Date.now() / 1000.0
+            });
         });
 
         window.addEventListener('focus', () => {
-            if (this.isAnswering) {
-                this.wsClient.send({
-                    type: "event",
-                    name: "tab_focus",
-                    ts: Date.now() / 1000.0
-                });
-            }
+            this.wsClient.send({
+                type: "event",
+                name: "tab_focus",
+                ts: Date.now() / 1000.0
+            });
         });
 
         document.addEventListener('visibilitychange', () => {
-            if (document.hidden && this.isAnswering) {
+            if (document.hidden) {
                 this.wsClient.send({
                     type: "event",
                     name: "visibility_hidden",
@@ -276,13 +272,11 @@ class CandidateCapture {
         });
 
         window.addEventListener('resize', () => {
-            if (this.isAnswering) {
-                this.wsClient.send({
-                    type: "event",
-                    name: "window_resize",
-                    ts: Date.now() / 1000.0
-                });
-            }
+            this.wsClient.send({
+                type: "event",
+                name: "window_resize",
+                ts: Date.now() / 1000.0
+            });
         });
 
         console.log("[Candidate Capture] Window behavior listeners registered.");

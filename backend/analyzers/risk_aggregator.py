@@ -44,9 +44,9 @@ class RiskAggregator:
         composite_score = round(composite_score, 1)
 
         # Security overrides: Elevate risk status directly if a single signal is highly suspicious
-        if pause_s > 18.0 or gaze_offscreen_pct > 75.0:
+        if pause_s > 18.0 or gaze_offscreen_pct > 65.0:
             label = "high_risk"
-        elif pause_s > 10.0 or gaze_offscreen_pct > 50.0 or blur_count >= 1:
+        elif pause_s > 10.0 or gaze_offscreen_pct > 35.0 or blur_count >= 1:
             label = "suspicious"
         elif composite_score < CLEAN_MAX_SCORE:
             label = "clean"

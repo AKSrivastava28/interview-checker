@@ -1,10 +1,10 @@
 from typing import List
 
 # Center screen bounding box boundaries (normalized 0.0 - 1.0)
-DEFAULT_CENTER_X_MIN = 0.25
-DEFAULT_CENTER_X_MAX = 0.75
-DEFAULT_CENTER_Y_MIN = 0.20
-DEFAULT_CENTER_Y_MAX = 0.80
+DEFAULT_CENTER_X_MIN = 0.35
+DEFAULT_CENTER_X_MAX = 0.65
+DEFAULT_CENTER_Y_MIN = 0.30
+DEFAULT_CENTER_Y_MAX = 0.70
 
 class GazeAnalyzer:
     def __init__(
