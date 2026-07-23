@@ -122,27 +122,10 @@ class CandidateCapture {
                                 const relX = (iris.x - Math.min(leftCorner.x, rightCorner.x)) / eyeWidth;
                                 const relY = (iris.y - Math.min(topBoundary.y, bottomBoundary.y)) / eyeHeight;
 
-                                // If calibration is not complete, gather baseline samples (assumes candidate looks straight at start)
-                                if (!this.isCalibrated) {
-                                    this.calibrationSamples.push({ x: relX, y: relY });
-                                    if (this.calibrationSamples.length >= 50) {
-                                        const sumX = this.calibrationSamples.reduce((sum, s) => sum + s.x, 0);
-                                        const sumY = this.calibrationSamples.reduce((sum, s) => sum + s.y, 0);
-                                        this.calibratedX = sumX / this.calibrationSamples.length;
-                                        this.calibratedY = sumY / this.calibrationSamples.length;
-                                        this.isCalibrated = true;
-                                        console.log(`[Gaze Calibration] Baseline established! X: ${this.calibratedX.toFixed(3)}, Y: ${this.calibratedY.toFixed(3)}`);
-                                    }
-                                }
-
-                                // Apply calibration offsets to normalize straight gaze to 0.5
-                                const mappedX = 0.5 + (relX - this.calibratedX);
-                                const mappedY = 0.5 + (relY - this.calibratedY);
-
-                                // Clamp values between 0.0 and 1.0
+                                // Map direct relative eye-socket coordinates (naturally centered around 0.5)
                                 this.latestGazeCoords = {
-                                    x: Math.round(Math.max(0.0, Math.min(1.0, mappedX)) * 1000) / 1000,
-                                    y: Math.round(Math.max(0.0, Math.min(1.0, mappedY)) * 1000) / 1000
+                                    x: Math.round(Math.max(0.0, Math.min(1.0, relX)) * 1000) / 1000,
+                                    y: Math.round(Math.max(0.0, Math.min(1.0, relY)) * 1000) / 1000
                                 };
                                 return;
                             }
