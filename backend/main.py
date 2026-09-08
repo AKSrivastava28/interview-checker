@@ -16,6 +16,7 @@ from backend.websocket_manager import ws_manager
 from backend.question_engine import question_engine
 from backend.analyzers.timing_analyzer import TimingAnalyzer
 from backend.analyzers.gaze_analyzer import GazeAnalyzer
+from backend.analyzers.speech_analyzer import SpeechAnalyzer
 from backend.analyzers.ai_likeness_scorer import AILikenessScorer
 from backend.analyzers.risk_aggregator import RiskAggregator
 
@@ -36,8 +37,8 @@ app.add_middleware(
 gaze_analyzer = GazeAnalyzer()
 ai_scorer = AILikenessScorer()
 
-# Configure total questions limit (2 for testing, 5 for final demo)
-MAX_QUESTIONS = 3
+# Configure total questions limit (2 questions requested by user)
+MAX_QUESTIONS = 2
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
@@ -91,19 +92,21 @@ def get_session_report_view(session_id: str):
     rows_html = ""
     for res in session.question_results:
         badge_class = "risk-clean" if res.risk == "clean" else ("risk-suspicious" if res.risk == "suspicious" else "risk-high")
+        delivery_str = res.speech_delivery.replace('_', ' ').title()
         rows_html += f"""
         <tr class="{badge_class}">
             <td>Q{res.question_n}</td>
             <td><strong>{res.question_text}</strong></td>
             <td>{res.pause_s}s</td>
+            <td><strong>{delivery_str}</strong> ({res.speech_reading_score}/100)</td>
+            <td>{res.blur_count} Blurs / {res.fullscreen_exit_count} Exits</td>
             <td>{res.gaze_offscreen_pct}%</td>
-            <td>{res.blur_count}</td>
             <td>{res.ai_likeness_score}/100</td>
             <td><span class="badge {badge_class}">{res.risk.upper()}</span></td>
             <td><p class="rationale">{res.ai_rationale}</p></td>
         </tr>
         <tr>
-            <td colspan="8" class="transcript-cell"><em>Transcript:</em> "{res.transcript_text or 'No speech recorded'}"</td>
+            <td colspan="9" class="transcript-cell"><em>Transcript:</em> "{res.transcript_text or 'No speech recorded'}"</td>
         </tr>
         """
 
@@ -115,11 +118,11 @@ def get_session_report_view(session_id: str):
         <title>Interview Integrity Report - Session {session_id}</title>
         <style>
             body {{ font-family: 'Inter', -apple-system, sans-serif; background: #0b0f19; color: #f8fafc; padding: 2rem; margin: 0; }}
-            .container {{ max-width: 1000px; margin: 0 auto; background: #151c2e; border-radius: 12px; padding: 2rem; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.08); }}
+            .container {{ max-width: 1100px; margin: 0 auto; background: #151c2e; border-radius: 12px; padding: 2rem; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.08); }}
             h1 {{ color: #38bdf8; margin-top: 0; }}
             .meta {{ color: #94a3b8; font-size: 0.9rem; margin-bottom: 2rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 1rem; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 1rem; }}
-            th, td {{ padding: 12px 16px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }}
+            th, td {{ padding: 12px 14px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 0.9rem; }}
             th {{ background: #0b0f19; color: #cbd5e1; font-weight: 600; }}
             .badge {{ padding: 4px 10px; border-radius: 9999px; font-weight: bold; font-size: 0.8rem; text-transform: uppercase; }}
             .risk-clean .badge {{ background: rgba(16, 185, 129, 0.15); color: #10b981; }}
@@ -141,16 +144,17 @@ def get_session_report_view(session_id: str):
                     <tr>
                         <th>#</th>
                         <th>Question</th>
-                        <th>Pause</th>
-                        <th>Gaze Offscreen</th>
-                        <th>Tab Blurs</th>
+                        <th>Latency</th>
+                        <th>Speech Delivery</th>
+                        <th>Focus & Fullscreen</th>
+                        <th>Offscreen Gaze</th>
                         <th>AI Score</th>
                         <th>Risk</th>
-                        <th>AI Rationale</th>
+                        <th>Integrity Rationale</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {rows_html if rows_html else '<tr><td colspan="8">No question analysis data recorded for this session.</td></tr>'}
+                    {rows_html if rows_html else '<tr><td colspan="9">No question analysis data recorded for this session.</td></tr>'}
                 </tbody>
             </table>
         </div>
@@ -161,33 +165,46 @@ def get_session_report_view(session_id: str):
 
 
 async def evaluate_question_window(session: SessionState, win: QuestionWindow):
-    # 1. Timing Analysis
-    pause_s = TimingAnalyzer.calculate_pause(
+    # 1. Speech Delivery & Timing Analysis (Reading cadence vs spontaneous flow)
+    speech_metrics = SpeechAnalyzer.analyze_speech_delivery(
         question_start_ts=win.start_ts,
         transcript_chunks=win.transcript_chunks,
-        window_end_ts=win.end_ts
+        window_end_ts=win.end_ts or time.time()
     )
+    pause_s = speech_metrics.get("prompt_latency_s", 0.0)
+    speech_reading_score = speech_metrics.get("reading_cadence_score", 0)
+    speech_delivery_label = speech_metrics.get("delivery_style", "spontaneous")
+    speech_rationale = speech_metrics.get("rationale", "")
 
-    # 2. Gaze Analysis
+    # 2. Gaze Analysis (Offscreen: Phone in lap / 2nd monitor only)
     gaze_offscreen_pct = gaze_analyzer.calculate_offscreen_percentage(win.gaze_samples)
 
-    # 3. Events Analysis
+    # 3. Events Analysis (Tab blurs & Fullscreen exits)
     blur_count = sum(1 for e in win.event_samples if e.get("name") in ["tab_blur", "visibility_hidden"])
+    fullscreen_exit_count = sum(1 for e in win.event_samples if e.get("name") == "fullscreen_exit")
 
     # 4. Transcript Aggregation & AI Likeness Scoring
     final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
     full_transcript = " ".join(final_transcripts).strip()
-    if not full_transcript:
-        full_transcript = " ".join([c.get("text", "") for c in win.transcript_chunks]).strip()
+    if not full_transcript and win.transcript_chunks:
+        full_transcript = win.transcript_chunks[-1].get("text", "").strip()
 
     ai_result = await ai_scorer.analyze_transcript(full_transcript, win.question_text)
 
-    # 5. Risk Aggregator
+    ai_rationale = ai_result.rationale
+    ai_rationale += f" [Speech Flow] {speech_rationale}"
+    if blur_count > 0 or fullscreen_exit_count > 0:
+        ai_rationale += f" [Focus Alert] {blur_count} window blur(s), {fullscreen_exit_count} fullscreen exit(s)."
+
+    # 5. Multi-Signal Risk Aggregator
     risk_label, composite_score, breakdown = RiskAggregator.compute_risk(
         pause_s=pause_s,
         gaze_offscreen_pct=gaze_offscreen_pct,
         blur_count=blur_count,
-        ai_likeness_score=ai_result.score
+        ai_likeness_score=ai_result.score,
+        reading_pct=float(speech_reading_score),
+        speech_reading_score=speech_reading_score,
+        fullscreen_exit_count=fullscreen_exit_count
     )
 
     analysis_res = QuestionAnalysisResult(
@@ -195,9 +212,13 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
         question_text=win.question_text,
         pause_s=pause_s,
         gaze_offscreen_pct=gaze_offscreen_pct,
+        reading_pct=float(speech_reading_score),
+        speech_reading_score=speech_reading_score,
+        speech_delivery=speech_delivery_label,
         blur_count=blur_count,
+        fullscreen_exit_count=fullscreen_exit_count,
         ai_likeness_score=ai_result.score,
-        ai_rationale=ai_result.rationale,
+        ai_rationale=ai_rationale,
         risk=risk_label,
         transcript_text=full_transcript,
         ts=time.time()
@@ -268,9 +289,20 @@ async def websocket_candidate(websocket: WebSocket, session_id: str):
                 if session.current_window:
                     session.current_window.start_ts = time.time()
             elif msg_type == "gaze":
-                session.add_gaze(x=float(data.get("x", 0.5)), y=float(data.get("y", 0.5)), ts=ts)
+                session.add_gaze(
+                    x=float(data.get("x", 0.5)),
+                    y=float(data.get("y", 0.5)),
+                    ts=ts,
+                    reading_detected=bool(data.get("reading_detected", False)),
+                    reading_type=str(data.get("reading_type", ""))
+                )
             elif msg_type == "transcript":
-                session.add_transcript(text=str(data.get("text", "")), is_final=bool(data.get("is_final", False)), ts=ts)
+                session.add_transcript(
+                    text=str(data.get("text", "")),
+                    is_final=bool(data.get("is_final", False)),
+                    ts=ts,
+                    word_count=int(data.get("word_count", 0))
+                )
             elif msg_type == "event":
                 session.add_event(name=str(data.get("name", "")), ts=ts)
             elif msg_type == "done_answering":

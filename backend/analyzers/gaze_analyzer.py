@@ -21,7 +21,7 @@ class GazeAnalyzer:
 
     def calculate_offscreen_percentage(self, gaze_samples: List[dict]) -> float:
         """
-        Calculates percentage of gaze samples outside the defined central vision box.
+        Calculates percentage of gaze samples outside the central vision box OR fixated reading external AI text.
         """
         if not gaze_samples:
             return 0.0
@@ -30,8 +30,20 @@ class GazeAnalyzer:
         for sample in gaze_samples:
             x = sample.get("x", 0.5)
             y = sample.get("y", 0.5)
-            if x < self.x_min or x > self.x_max or y < self.y_min or y > self.y_max:
+            is_reading = sample.get("reading_detected", False)
+            if x < self.x_min or x > self.x_max or y < self.y_min or y > self.y_max or is_reading:
                 offscreen_count += 1
 
         pct = (offscreen_count / len(gaze_samples)) * 100.0
+        return round(pct, 1)
+
+    def calculate_reading_percentage(self, gaze_samples: List[dict]) -> float:
+        """
+        Calculates percentage of samples flagged as reading behavior (eye fixation on external text / reading saccades).
+        """
+        if not gaze_samples:
+            return 0.0
+
+        reading_count = sum(1 for s in gaze_samples if s.get("reading_detected", False))
+        pct = (reading_count / len(gaze_samples)) * 100.0
         return round(pct, 1)

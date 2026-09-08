@@ -6,8 +6,8 @@ from backend.config import GROK_API_KEY, GROK_API_BASE
 logger = logging.getLogger("question_engine")
 
 HARDCODED_QUESTIONS = [
-    "Tell me about a difficult technical challenge you solved recently. What was the problem and how did you approach it?",
-    "How do you handle disagreement with a colleague or product manager about technical direction?",
+    "What is RAG (Retrieval-Augmented Generation) and how does it work?",
+    "What is multithreading, and how does it differ from multiprocessing?",
     "Explain the difference between synchronous and asynchronous programming, and when you would use each.",
     "Describe a time you had to optimize a slow application. What tools did you use and what was the outcome?",
     "What is your approach to writing clean, maintainable code, and how do you ensure code quality in a team?"

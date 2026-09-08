@@ -83,18 +83,26 @@ class ReviewerDashboard {
                     "${result.question_text}"
                 </div>
 
-                <div class="metric-row">
+                <div class="metric-row" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">
                     <div class="metric-card">
-                        <label>Pause Latency</label>
+                        <label>Prompt Latency</label>
                         <span>${result.pause_s}s</span>
+                    </div>
+                    <div class="metric-card">
+                        <label>Speech Delivery</label>
+                        <span style="color: ${(result.speech_reading_score || 0) > 40 ? 'var(--color-suspicious)' : 'var(--color-clean)'}; font-size: 0.88rem; font-weight: bold;">
+                            ${(result.speech_delivery || 'spontaneous').replace('_', ' ').toUpperCase()} (${result.speech_reading_score || 0}/100)
+                        </span>
+                    </div>
+                    <div class="metric-card">
+                        <label>Focus & Fullscreen</label>
+                        <span style="color: ${(result.blur_count + (result.fullscreen_exit_count || 0)) > 0 ? 'var(--color-suspicious)' : 'var(--color-clean)'}; font-weight: bold;">
+                            ${result.blur_count || 0} Blurs / ${result.fullscreen_exit_count || 0} Exits
+                        </span>
                     </div>
                     <div class="metric-card">
                         <label>Offscreen Gaze</label>
                         <span>${result.gaze_offscreen_pct}%</span>
-                    </div>
-                    <div class="metric-card">
-                        <label>Focus Blurs</label>
-                        <span>${result.blur_count}</span>
                     </div>
                     <div class="metric-card">
                         <label>AI Likeness</label>

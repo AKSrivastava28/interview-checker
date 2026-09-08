@@ -10,9 +10,15 @@ class CandidateCapture {
         this.stream = null;
         this.gazeSampleInterval = null;
         
-        this.latestGazeCoords = { x: 0.5, y: 0.5 };
+        this.latestGazeCoords = { x: 0.5, y: 0.5, reading_detected: false, reading_type: "" };
+        this.isReadingDetected = false;
+        this.readingDetail = "";
+        this.gazeHistory = [];
+        this.isFaceInFrame = false;
+        this.onFaceStatusChanged = null;
         
         // Silence detection trackers
+        this.isInterviewActive = false;
         this.isAnswering = false;
         this.hasSpokenInWindow = false;
         this.lastSpeechTimestamp = 0;
@@ -76,12 +82,21 @@ class CandidateCapture {
 
             if (previewVideo) {
                 previewVideo.srcObject = this.stream;
-                await previewVideo.play().catch(e => console.warn("previewVideo autoplay:", e));
+                try {
+                    await previewVideo.play();
+                } catch (e) {
+                    console.warn("[Candidate Capture] previewVideo play warning:", e);
+                }
+                let attempts = 0;
+                while (previewVideo.videoWidth === 0 && attempts < 20) {
+                    await new Promise(r => setTimeout(r, 50));
+                    attempts++;
+                }
             }
 
-            if (overlayCanvas) {
-                overlayCanvas.width = 640;
-                overlayCanvas.height = 480;
+            if (overlayCanvas && previewVideo) {
+                overlayCanvas.width = previewVideo.videoWidth || 640;
+                overlayCanvas.height = previewVideo.videoHeight || 480;
             }
             const ctx = overlayCanvas ? overlayCanvas.getContext("2d") : null;
 
@@ -102,8 +117,18 @@ class CandidateCapture {
                         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
                     }
 
+                    const cameraBubble = document.getElementById("camera-bubble-container");
+
                     if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                        this.isFaceInFrame = true;
+                        if (cameraBubble) {
+                            cameraBubble.classList.add("face-aligned");
+                            cameraBubble.classList.remove("face-lost");
+                        }
+
                         const landmarks = results.multiFaceLandmarks[0];
+                        const cw = overlayCanvas ? overlayCanvas.width : 640;
+                        const ch = overlayCanvas ? overlayCanvas.height : 480;
 
                         // 1. Compute Face Bounding Box
                         let minX = 1.0, maxX = 0.0, minY = 1.0, maxY = 0.0;
@@ -142,17 +167,36 @@ class CandidateCapture {
                             eyeDrop = (landmarks[468].y - noseBridge.y) / faceW;
                         }
 
-                        // Gaze decisions
-                        const isYawOk = Math.abs(headYaw) < 0.16;
-                        const isPitchOk = pitchRatio >= 0.70 && pitchRatio <= 1.65;
-                        const isEyeDown = eyeDrop > 0.36;
+                        // Eye Pupil Offset within Socket (Micro-Gaze Tracking)
+                        // Right Eye (MediaPipe coordinates: 33 outer, 133 inner, 159 top, 145 bottom, 468 iris center)
+                        const eye1W = Math.abs(landmarks[133].x - landmarks[33].x) || 0.01;
+                        const eye1H = Math.abs(landmarks[145].y - landmarks[159].y) || 0.01;
+                        const eye1CenterX = (landmarks[33].x + landmarks[133].x) / 2;
+                        const eye1CenterY = (landmarks[159].y + landmarks[145].y) / 2;
+                        const disp1X = landmarks[468] ? (landmarks[468].x - eye1CenterX) / eye1W : 0;
+                        const disp1Y = landmarks[468] ? (landmarks[468].y - eye1CenterY) / eye1H : 0;
+
+                        // Left Eye (MediaPipe coordinates: 362 inner, 263 outer, 386 top, 374 bottom, 473 iris center)
+                        const eye2W = Math.abs(landmarks[263].x - landmarks[362].x) || 0.01;
+                        const eye2H = Math.abs(landmarks[374].y - landmarks[386].y) || 0.01;
+                        const eye2CenterX = (landmarks[362].x + landmarks[263].x) / 2;
+                        const eye2CenterY = (landmarks[386].y + landmarks[374].y) / 2;
+                        const disp2X = landmarks[473] ? (landmarks[473].x - eye2CenterX) / eye2W : 0;
+                        const disp2Y = landmarks[473] ? (landmarks[473].y - eye2CenterY) / eye2H : 0;
+
+                        const pupilGazeX = (disp1X + disp2X) / 2;
+                        const pupilGazeY = (disp1Y + disp2Y) / 2;
+
+                        // Physical Head & Gaze Orientation
+                        // Safe zone: Looking anywhere at the screen/interviewer/question text is 100% CLEAN
+                        const isYawOk = Math.abs(headYaw) < 0.22;
+                        const isPitchOk = pitchRatio >= 0.60 && pitchRatio <= 1.85;
+                        const isEyeDown = eyeDrop > 0.42;
 
                         const isFocusedOnScreen = isYawOk && isPitchOk && !isEyeDown;
 
                         // 3. Draw Proctoring Overlay on Canvas
                         if (ctx && overlayCanvas) {
-                            const cw = overlayCanvas.width;
-                            const ch = overlayCanvas.height;
                             const pad = 16;
                             const boxX = Math.max(0, minX * cw - pad);
                             const boxY = Math.max(0, minY * ch - pad);
@@ -160,10 +204,11 @@ class CandidateCapture {
                             const boxH = Math.min(ch - boxY, (maxY - minY) * ch + pad * 2);
 
                             const color = isFocusedOnScreen ? '#10b981' : '#f43f5e';
+
                             ctx.strokeStyle = color;
                             ctx.lineWidth = 3;
 
-                            // Draw high-tech corner brackets around face
+                            // Draw corner brackets around face
                             const cornerLen = Math.min(25, boxW / 4, boxH / 4);
                             ctx.beginPath();
                             // Top-left
@@ -184,7 +229,7 @@ class CandidateCapture {
                             ctx.lineTo(boxX + boxW, boxY + cornerLen);
                             ctx.stroke();
 
-                            // Draw pupil tracking markers
+                            // Draw pupil & nose tracking markers
                             ctx.fillStyle = color;
                             if (landmarks[468]) {
                                 ctx.beginPath();
@@ -196,53 +241,85 @@ class CandidateCapture {
                                 ctx.arc(landmarks[473].x * cw, landmarks[473].y * ch, 4, 0, Math.PI * 2);
                                 ctx.fill();
                             }
+                            ctx.beginPath();
+                            ctx.arc(nose.x * cw, nose.y * ch, 3, 0, Math.PI * 2);
+                            ctx.fill();
                         }
 
                         // 4. Update UI Status Badge & Coordinates for Backend
-                        if (isFocusedOnScreen) {
-                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-screen";
-                            if (gazeText) gazeText.textContent = "🟢 Screen Focused";
-                            this.latestGazeCoords = { x: 0.50, y: 0.50 };
-                        } else if (pitchRatio > 1.65 || isEyeDown) {
-                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
-                            if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Phone / Lap";
-                            this.latestGazeCoords = { x: 0.50, y: 0.95 };
+                        if (!isFocusedOnScreen) {
+                            if (pitchRatio > 1.85 || isEyeDown) {
+                                if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
+                                if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Looking Down / Phone";
+                                this.latestGazeCoords = { x: 0.50, y: 0.95, reading_detected: false, reading_type: "" };
+                            } else {
+                                if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
+                                if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Looking Away / 2nd Monitor";
+                                const sideX = headYaw > 0 ? 0.95 : 0.05;
+                                this.latestGazeCoords = { x: sideX, y: 0.50, reading_detected: false, reading_type: "" };
+                            }
+                            if (cameraBubble) {
+                                cameraBubble.className = "camera-bubble face-aligned face-lost";
+                            }
                         } else {
-                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
-                            if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Side Display";
-                            const sideX = headYaw > 0 ? 0.95 : 0.05;
-                            this.latestGazeCoords = { x: sideX, y: 0.50 };
+                            // Looking at the screen, at the interviewer, or at the camera: 100% CLEAN
+                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-screen";
+                            if (gazeText) gazeText.textContent = "🟢 Face Detected: Screen Focused";
+                            this.latestGazeCoords = { x: 0.50, y: 0.50, reading_detected: false, reading_type: "" };
+                            if (cameraBubble) {
+                                cameraBubble.className = "camera-bubble face-aligned";
+                            }
+                        }
+
+                        if (this.onFaceStatusChanged) {
+                            this.onFaceStatusChanged(true, isFocusedOnScreen);
                         }
 
                     } else {
-                        // No face detected in frame
-                        if (gazeBadge) gazeBadge.className = "gaze-status-badge no-face";
-                        if (gazeText) gazeText.textContent = "⚠️ No Face Detected";
-                        this.latestGazeCoords = { x: 0.0, y: 0.0 };
+                        // No face detected in frame (e.g. camera pointed at ceiling!)
+                        this.isFaceInFrame = false;
+                        if (cameraBubble) {
+                            cameraBubble.classList.remove("face-aligned");
+                            cameraBubble.classList.add("face-lost");
+                        }
+                        if (gazeBadge) {
+                            gazeBadge.className = "gaze-status-badge no-face";
+                            if (gazeText) gazeText.textContent = "❌ No Face in Camera Frame";
+                        }
+                        this.latestGazeCoords = { x: 0.0, y: 0.0, reading_detected: false, reading_type: "" };
+
+                        if (this.onFaceStatusChanged) {
+                            this.onFaceStatusChanged(false, false);
+                        }
                     }
                 });
 
-                // Frame processing with MediaPipe Camera or smooth animation loop
-                if (window.Camera && previewVideo) {
-                    const camera = new window.Camera(previewVideo, {
-                        onFrame: async () => {
-                            if (previewVideo && !previewVideo.paused && !previewVideo.ended) {
+                // 5. Native Frame Processing Loop (No duplicate camera streams!)
+                let isProcessingFrame = false;
+                const processFrame = async () => {
+                    if (previewVideo && previewVideo.readyState >= 2 && !previewVideo.paused && !previewVideo.ended) {
+                        if (!isProcessingFrame) {
+                            isProcessingFrame = true;
+                            try {
                                 await this.faceMesh.send({ image: previewVideo });
+                            } catch (err) {
+                                console.warn("[Candidate Capture] FaceMesh frame send warning:", err);
+                            } finally {
+                                isProcessingFrame = false;
                             }
-                        },
-                        width: 640,
-                        height: 480
-                    });
-                    camera.start();
-                    console.log("[Candidate Capture] MediaPipe Camera controller active.");
-                } else if (previewVideo) {
-                    const processFrame = async () => {
-                        if (previewVideo && !previewVideo.paused && !previewVideo.ended) {
-                            await this.faceMesh.send({ image: previewVideo });
                         }
+                    }
+                    if ('requestVideoFrameCallback' in previewVideo) {
+                        previewVideo.requestVideoFrameCallback(processFrame);
+                    } else {
                         requestAnimationFrame(processFrame);
-                    };
-                    processFrame();
+                    }
+                };
+
+                if ('requestVideoFrameCallback' in previewVideo) {
+                    previewVideo.requestVideoFrameCallback(processFrame);
+                } else {
+                    requestAnimationFrame(processFrame);
                 }
 
                 // Stream gaze samples ~5x per second during answering window
@@ -252,6 +329,8 @@ class CandidateCapture {
                             type: "gaze",
                             x: this.latestGazeCoords.x,
                             y: this.latestGazeCoords.y,
+                            reading_detected: Boolean(this.latestGazeCoords.reading_detected),
+                            reading_type: this.latestGazeCoords.reading_type || "",
                             ts: Date.now() / 1000.0
                         });
                     }
@@ -296,11 +375,13 @@ class CandidateCapture {
             if (this.isAnswering) {
                 this.hasSpokenInWindow = true;
                 this.lastSpeechTimestamp = Date.now();
+                const wordCount = fullText.split(/\s+/).filter(Boolean).length;
                 
                 this.wsClient.send({
                     type: "transcript",
                     text: fullText,
                     is_final: event.results[event.results.length - 1].isFinal,
+                    word_count: wordCount,
                     ts: Date.now() / 1000.0
                 });
             }
@@ -340,6 +421,15 @@ class CandidateCapture {
         }
     }
 
+    requestFullscreen() {
+        const elem = document.documentElement;
+        if (elem.requestFullscreen) {
+            elem.requestFullscreen().catch(err => console.warn("[Fullscreen] Failed to enter fullscreen:", err));
+        } else if (elem.webkitRequestFullscreen) {
+            elem.webkitRequestFullscreen();
+        }
+    }
+
     setupWindowListeners() {
         window.addEventListener('blur', () => {
             this.wsClient.send({
@@ -347,6 +437,10 @@ class CandidateCapture {
                 name: "tab_blur",
                 ts: Date.now() / 1000.0
             });
+            const blurAlert = document.getElementById("focus-alert-banner");
+            if (blurAlert && this.isInterviewActive) {
+                blurAlert.style.display = "flex";
+            }
         });
 
         window.addEventListener('focus', () => {
@@ -355,6 +449,10 @@ class CandidateCapture {
                 name: "tab_focus",
                 ts: Date.now() / 1000.0
             });
+            const blurAlert = document.getElementById("focus-alert-banner");
+            if (blurAlert) {
+                setTimeout(() => { blurAlert.style.display = "none"; }, 1500);
+            }
         });
 
         document.addEventListener('visibilitychange', () => {
@@ -367,6 +465,24 @@ class CandidateCapture {
             }
         });
 
+        document.addEventListener('fullscreenchange', () => {
+            const isFs = Boolean(document.fullscreenElement);
+            this.wsClient.send({
+                type: "event",
+                name: isFs ? "fullscreen_enter" : "fullscreen_exit",
+                ts: Date.now() / 1000.0
+            });
+
+            const fsModal = document.getElementById("fullscreen-modal");
+            if (fsModal) {
+                if (!isFs && this.isInterviewActive) {
+                    fsModal.style.display = "flex";
+                } else {
+                    fsModal.style.display = "none";
+                }
+            }
+        });
+
         window.addEventListener('resize', () => {
             this.wsClient.send({
                 type: "event",
@@ -375,16 +491,16 @@ class CandidateCapture {
             });
         });
 
-        console.log("[Candidate Capture] Window behavior listeners registered.");
+        console.log("[Candidate Capture] Window & Fullscreen behavior listeners registered.");
     }
 
     setupSilenceDetection() {
-        // Run check every 500ms
+        // Run check every 500ms; generous 6.0s thinking window so candidates aren't cut off
         this.silenceCheckInterval = setInterval(() => {
             if (this.isAnswering && this.hasSpokenInWindow) {
                 const silenceDuration = Date.now() - this.lastSpeechTimestamp;
-                if (silenceDuration > 3000) { // 3.0 seconds of silence
-                    console.log("[Silence Detector] Silence exceeded 3.0s. Autocomplete answer.");
+                if (silenceDuration > 6000) { // 6.0 seconds of silence
+                    console.log("[Silence Detector] Silence exceeded 6.0s. Completing answer.");
                     this.triggerDoneAnswering();
                 }
             }

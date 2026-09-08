@@ -501,20 +501,68 @@ header {
     display: none;
 }
 
-/* Camera Preview Bubble with Live Proctoring Overlay */
 .camera-bubble {
     position: fixed;
     bottom: 24px;
     right: 24px;
-    width: 250px;
-    height: 188px;
+    width: 280px;
+    height: 210px;
     background: #0f172a;
     border-radius: 14px;
     overflow: hidden;
     box-shadow: 0 10px 35px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.12);
     z-index: 1000;
     transition: border-color 0.3s ease, box-shadow 0.3s ease;
-    border: 2px solid rgba(56, 189, 248, 0.3);
+    border: 3px solid rgba(56, 189, 248, 0.4);
+}
+
+.camera-bubble.face-aligned {
+    border-color: #10b981 !important;
+    box-shadow: 0 0 25px rgba(16, 185, 129, 0.4), 0 0 0 1px #10b981 !important;
+}
+
+.camera-bubble.face-lost {
+    border-color: #f43f5e !important;
+    box-shadow: 0 0 25px rgba(244, 63, 94, 0.5), 0 0 0 1px #f43f5e !important;
+    animation: pulse-camera-alert 1.2s infinite alternate ease-in-out;
+}
+
+@keyframes pulse-camera-alert {
+    from { border-color: #f43f5e; box-shadow: 0 0 15px rgba(244, 63, 94, 0.4); }
+    to { border-color: #fb7185; box-shadow: 0 0 30px rgba(244, 63, 94, 0.8); }
+}
+
+.face-alert-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: rgba(244, 63, 94, 0.2);
+    border: 1px solid #f43f5e;
+    color: #fecdd3;
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 0.88rem;
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+    text-align: center;
+    box-shadow: 0 4px 15px rgba(244, 63, 94, 0.2);
+    animation: pulse-banner 1.5s infinite alternate;
+}
+
+@keyframes pulse-banner {
+    from { background: rgba(244, 63, 94, 0.18); }
+    to { background: rgba(244, 63, 94, 0.32); }
+}
+
+.btn-primary:disabled, .btn-primary.disabled {
+    background: rgba(255, 255, 255, 0.08) !important;
+    color: var(--text-secondary) !important;
+    cursor: not-allowed !important;
+    transform: none !important;
+    box-shadow: none !important;
+    border: 1px dashed rgba(255, 255, 255, 0.15) !important;
 }
 
 .camera-bubble video {
@@ -592,6 +640,23 @@ header {
 
 .gaze-status-badge.no-face .badge-dot {
     background: #ffffff;
+}
+
+.gaze-status-badge.reading-detected {
+    background: rgba(245, 158, 11, 0.95);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);
+}
+
+.gaze-status-badge.reading-detected .badge-dot {
+    background: #ffffff;
+    box-shadow: 0 0 6px #f59e0b;
+}
+
+.camera-bubble.reading-active {
+    border-color: #f59e0b !important;
+    box-shadow: 0 0 25px rgba(245, 158, 11, 0.45), 0 0 0 1px #f59e0b !important;
 }
 
 @keyframes pulse-gaze-alert {

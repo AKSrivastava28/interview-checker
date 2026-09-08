@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IntegrityGuard AI — Mock Interview Portal</title>
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260908_3">
 
     <!-- MediaPipe FaceMesh for client-side gaze estimation -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
@@ -84,9 +84,32 @@
                     </div>
                 </div>
 
+                <div id="face-alert-banner" class="face-alert-banner" style="display: none;">
+                    ⚠️ <span id="face-alert-text">No face detected in camera frame. Please position your face inside the camera frame to start.</span>
+                </div>
+
+                <div id="focus-alert-banner" class="face-alert-banner" style="display: none; background: rgba(245, 158, 11, 0.25); border-color: #f59e0b; color: #fef08a;">
+                    ⚠️ <span id="focus-alert-text">Window Focus Lost! Please keep this browser window focused during your answer.</span>
+                </div>
+
                 <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 1rem;">
-                    <button id="btn-start-interview" class="btn btn-primary" style="display: none;">🚀 Start Interview</button>
+                    <button id="btn-start-interview" class="btn btn-primary disabled" disabled style="display: none;">⚠️ Align Face to Start</button>
                     <button id="btn-done-answering" class="btn btn-secondary" style="display: none;">✓ Done Answering</button>
+                </div>
+            </div>
+
+            <!-- Fullscreen Enforcement Overlay Modal -->
+            <div id="fullscreen-modal" class="modal-overlay" style="display: none; z-index: 9999;">
+                <div class="modal-content" style="max-width: 520px; border-color: #f59e0b;">
+                    <div class="modal-icon" style="background: rgba(245, 158, 11, 0.2); color: #f59e0b;">⛶</div>
+                    <h3 style="color: #fbbf24;">Fullscreen Mode Required</h3>
+                    <p>
+                        To maintain interview integrity, this session must remain in fullscreen mode. 
+                        External applications and window switching are monitored.
+                    </p>
+                    <button id="btn-return-fullscreen" class="btn btn-primary" style="width: 100%;">
+                        ⛶ Return to Fullscreen
+                    </button>
                 </div>
             </div>
 
@@ -103,9 +126,9 @@
     </main>
 
     <!-- JS modules -->
-    <script src="/static/js/websocket-client.js"></script>
-    <script src="/static/js/interviewer-ui.js"></script>
-    <script src="/static/js/candidate-capture.js"></script>
+    <script src="/static/js/websocket-client.js?v=20260908_3"></script>
+    <script src="/static/js/interviewer-ui.js?v=20260908_3"></script>
+    <script src="/static/js/candidate-capture.js?v=20260908_3"></script>
 
     <script>
         let sessionId = null;
@@ -172,23 +195,67 @@
             voiceEngine = new InterviewerVoice();
             captureEngine = new CandidateCapture(wsClient, voiceEngine);
 
+            let isInterviewActive = false;
+            const btnStart = document.getElementById("btn-start-interview");
+            const btnDone = document.getElementById("btn-done-answering");
+            const wave = document.getElementById("tts-wave");
+            const faceAlertBanner = document.getElementById("face-alert-banner");
+            const faceAlertText = document.getElementById("face-alert-text");
+
+            // Face detection watcher: gate starting and alert during interview
+            captureEngine.onFaceStatusChanged = (isFacePresent, isFocused) => {
+                if (!isInterviewActive) {
+                    if (isFacePresent) {
+                        btnStart.disabled = false;
+                        btnStart.classList.remove("disabled");
+                        btnStart.textContent = "🚀 Start Interview";
+                        faceAlertBanner.style.display = "none";
+                    } else {
+                        btnStart.disabled = true;
+                        btnStart.classList.add("disabled");
+                        btnStart.textContent = "⚠️ Align Face to Start";
+                        faceAlertBanner.style.display = "flex";
+                        faceAlertText.textContent = "No face detected in camera! Please adjust your webcam so your face is visible in the frame.";
+                    }
+                } else {
+                    if (!isFacePresent) {
+                        faceAlertBanner.style.display = "flex";
+                        faceAlertText.textContent = "⚠️ Alert: Your face is not visible in the camera! Please face the webcam.";
+                    } else {
+                        faceAlertBanner.style.display = "none";
+                    }
+                }
+            };
+
             // Initialize Consent Screen gating camera/mic
             captureEngine.initConsentModal(
                 null,
                 () => {
-                    // Show Start Interview button as soon as camera feed & face mesh are initialized
-                    document.getElementById("btn-start-interview").style.display = "inline-flex";
+                    // Show Start button (disabled by default until face is visible)
+                    btnStart.style.display = "inline-flex";
+                    if (!captureEngine.isFaceInFrame) {
+                        faceAlertBanner.style.display = "flex";
+                        faceAlertText.textContent = "Checking camera... Please position your face in front of the webcam to enable the interview.";
+                    }
                 }
             );
 
-            // Set up interview start flow
-            const btnStart = document.getElementById("btn-start-interview");
-            const btnDone = document.getElementById("btn-done-answering");
-            const wave = document.getElementById("tts-wave");
-
             btnStart.addEventListener("click", () => {
+                if (!captureEngine.isFaceInFrame) {
+                    alert("Please ensure your face is clearly visible in the camera frame before starting.");
+                    return;
+                }
+                isInterviewActive = true;
+                captureEngine.isInterviewActive = true;
+                captureEngine.requestFullscreen();
+                faceAlertBanner.style.display = "none";
                 wsClient.send({ type: "start_interview" });
                 btnStart.style.display = "none";
+            });
+
+            document.getElementById("btn-return-fullscreen").addEventListener("click", () => {
+                captureEngine.requestFullscreen();
+                document.getElementById("fullscreen-modal").style.display = "none";
             });
 
             btnDone.addEventListener("click", () => {

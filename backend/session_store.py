@@ -36,14 +36,24 @@ class SessionState:
         self.question_history.append(question_text)
         return self.current_window
 
-    def add_gaze(self, x: float, y: float, ts: float):
+    def add_gaze(self, x: float, y: float, ts: float, reading_detected: bool = False, reading_type: str = ""):
         if self.current_window:
-            self.current_window.gaze_samples.append({"x": x, "y": y, "ts": ts})
+            self.current_window.gaze_samples.append({
+                "x": x,
+                "y": y,
+                "ts": ts,
+                "reading_detected": reading_detected,
+                "reading_type": reading_type
+            })
 
-    def add_transcript(self, text: str, is_final: bool, ts: float):
+    def add_transcript(self, text: str, is_final: bool, ts: float, word_count: int = 0):
         if self.current_window:
-            # Store the latest cumulative transcript string directly
-            self.current_window.transcript_chunks = [{"text": text, "is_final": is_final, "ts": ts}]
+            self.current_window.transcript_chunks.append({
+                "text": text,
+                "is_final": is_final,
+                "ts": ts,
+                "word_count": word_count or len(text.split())
+            })
 
     def add_event(self, name: str, ts: float):
         if self.current_window:

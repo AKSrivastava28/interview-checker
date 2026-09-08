@@ -27,7 +27,11 @@ class QuestionAnalysisResult(BaseModel):
     question_n: int
     pause_s: float
     gaze_offscreen_pct: float
+    reading_pct: float = 0.0
+    speech_reading_score: int = 0
+    speech_delivery: str = "spontaneous"  # spontaneous | suspicious_reading | script_reading
     blur_count: int
+    fullscreen_exit_count: int = 0
     ai_likeness_score: int
     ai_rationale: str
     risk: str  # clean | suspicious | high_risk
