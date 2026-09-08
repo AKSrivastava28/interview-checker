@@ -12,37 +12,11 @@ class CandidateCapture {
         
         this.latestGazeCoords = { x: 0.5, y: 0.5 };
         
-        // Gaze Calibration properties
-        this.calibrationSamples = [];
-        this.calibratedX = 0.5;
-        this.calibratedY = 0.5;
-        this.isCalibrated = false;
-        this.isCalibrating = false;
-        this.onCalibrationProgress = null;
-        this.onCalibrationComplete = null;
-        
         // Silence detection trackers
         this.isAnswering = false;
         this.hasSpokenInWindow = false;
         this.lastSpeechTimestamp = 0;
         this.silenceCheckInterval = null;
-    }
-
-    startCalibration(onProgress, onComplete) {
-        this.calibrationSamples = [];
-        this.calibratedX = 0.5;
-        this.calibratedY = 0.5;
-        this.isCalibrated = false;
-        this.onCalibrationProgress = onProgress;
-        this.onCalibrationComplete = onComplete;
-        this.isCalibrating = true;
-        console.log("[Gaze Calibration] Started manual calibration baseline gathering...");
-    }
-
-    resetCalibration() {
-        this.calibrationSamples = [];
-        this.isCalibrated = false;
-        console.log("[Gaze Calibration] Baseline reset. Recalibrating...");
     }
 
     initConsentModal(onConsentCallback, onCaptureInitialized) {
@@ -90,25 +64,26 @@ class CandidateCapture {
 
     async setupMediaPipeGaze() {
         try {
-            this.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+            this.stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: 640, height: 480, facingMode: "user" },
+                audio: false 
+            });
             
-            // Create hidden video element to feed MediaPipe
-            this.videoElem = document.createElement("video");
-            this.videoElem.srcObject = this.stream;
-            this.videoElem.autoplay = true;
-            this.videoElem.playsInline = true;
-            this.videoElem.style.display = "none";
-            document.body.appendChild(this.videoElem);
-
-            // Also stream to video bubble on UI
             const previewVideo = document.getElementById("preview-video");
+            const overlayCanvas = document.getElementById("camera-overlay");
+            const gazeBadge = document.getElementById("gaze-badge");
+            const gazeText = document.getElementById("gaze-status-text");
+
             if (previewVideo) {
                 previewVideo.srcObject = this.stream;
+                await previewVideo.play().catch(e => console.warn("previewVideo autoplay:", e));
             }
 
-            await new Promise((resolve) => {
-                this.videoElem.onloadedmetadata = () => resolve();
-            });
+            if (overlayCanvas) {
+                overlayCanvas.width = 640;
+                overlayCanvas.height = 480;
+            }
+            const ctx = overlayCanvas ? overlayCanvas.getContext("2d") : null;
 
             if (window.FaceMesh) {
                 this.faceMesh = new window.FaceMesh({
@@ -123,73 +98,154 @@ class CandidateCapture {
                 });
 
                 this.faceMesh.onResults((results) => {
+                    if (ctx && overlayCanvas) {
+                        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                    }
+
                     if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
                         const landmarks = results.multiFaceLandmarks[0];
-                        const leftCorner = landmarks[362];
-                        const rightCorner = landmarks[263];
-                        const topBoundary = landmarks[386];
-                        const bottomBoundary = landmarks[374];
-                        const iris = landmarks[468];
 
-                        if (leftCorner && rightCorner && topBoundary && bottomBoundary && iris) {
-                            const eyeWidth = Math.abs(rightCorner.x - leftCorner.x);
-                            if (eyeWidth > 0) {
-                                const centerX = (leftCorner.x + rightCorner.x) / 2;
-                                const centerY = (topBoundary.y + bottomBoundary.y) / 2;
+                        // 1. Compute Face Bounding Box
+                        let minX = 1.0, maxX = 0.0, minY = 1.0, maxY = 0.0;
+                        for (let i = 0; i < landmarks.length; i++) {
+                            const p = landmarks[i];
+                            if (p.x < minX) minX = p.x;
+                            if (p.x > maxX) maxX = p.x;
+                            if (p.y < minY) minY = p.y;
+                            if (p.y > maxY) maxY = p.y;
+                        }
 
-                                // Normalize both X and Y offsets strictly by the stable eye width (ignores blink height noise)
-                                const relX = 0.5 + (iris.x - centerX) / eyeWidth;
-                                const relY = 0.5 + (iris.y - centerY) / eyeWidth;
+                        // 2. Physical Head & Gaze Metrics
+                        // 1: Nose tip, 168: Nose bridge, 10: Forehead, 152: Chin
+                        // 234: Right cheek, 454: Left cheek, 468: Left iris, 473: Right iris
+                        const nose = landmarks[1];
+                        const noseBridge = landmarks[168];
+                        const forehead = landmarks[10];
+                        const chin = landmarks[152];
+                        const cheekR = landmarks[234];
+                        const cheekL = landmarks[454];
 
-                                if (this.isCalibrating) {
-                                    this.calibrationSamples.push({ x: relX, y: relY });
-                                    if (this.onCalibrationProgress) {
-                                        this.onCalibrationProgress(this.calibrationSamples.length);
-                                    }
-                                    if (this.calibrationSamples.length >= 60) {
-                                        const sumX = this.calibrationSamples.reduce((sum, s) => sum + s.x, 0);
-                                        const sumY = this.calibrationSamples.reduce((sum, s) => sum + s.y, 0);
-                                        this.calibratedX = sumX / this.calibrationSamples.length;
-                                        this.calibratedY = sumY / this.calibrationSamples.length;
-                                        this.isCalibrating = false;
-                                        this.isCalibrated = true;
-                                        if (this.onCalibrationComplete) {
-                                            this.onCalibrationComplete();
-                                        }
-                                    }
-                                }
+                        const faceW = Math.abs(cheekL.x - cheekR.x) || 0.1;
+                        const midCheekX = (cheekR.x + cheekL.x) / 2;
 
-                                // Apply calibration offsets to map the straight gaze exactly to 0.5
-                                const mappedX = 0.5 + (relX - this.calibratedX);
-                                const mappedY = 0.5 + (relY - this.calibratedY);
+                        // Head Yaw: horizontal rotation (normal: -0.12 to +0.12)
+                        const headYaw = (nose.x - midCheekX) / faceW;
 
-                                this.latestGazeCoords = {
-                                    x: Math.round(Math.max(0.0, Math.min(1.0, mappedX)) * 1000) / 1000,
-                                    y: Math.round(Math.max(0.0, Math.min(1.0, mappedY)) * 1000) / 1000
-                                };
-                                return;
+                        // Head Pitch: forehead-to-nose vs nose-to-chin ratio (normal: 0.75 - 1.55)
+                        const dForehead = Math.abs(nose.y - forehead.y);
+                        const dChin = Math.abs(chin.y - nose.y);
+                        const pitchRatio = dForehead / (dChin + 0.001);
+
+                        // Eye Drop: iris distance below nose bridge relative to face size
+                        let eyeDrop = 0;
+                        if (landmarks[468] && noseBridge) {
+                            eyeDrop = (landmarks[468].y - noseBridge.y) / faceW;
+                        }
+
+                        // Gaze decisions
+                        const isYawOk = Math.abs(headYaw) < 0.16;
+                        const isPitchOk = pitchRatio >= 0.70 && pitchRatio <= 1.65;
+                        const isEyeDown = eyeDrop > 0.36;
+
+                        const isFocusedOnScreen = isYawOk && isPitchOk && !isEyeDown;
+
+                        // 3. Draw Proctoring Overlay on Canvas
+                        if (ctx && overlayCanvas) {
+                            const cw = overlayCanvas.width;
+                            const ch = overlayCanvas.height;
+                            const pad = 16;
+                            const boxX = Math.max(0, minX * cw - pad);
+                            const boxY = Math.max(0, minY * ch - pad);
+                            const boxW = Math.min(cw - boxX, (maxX - minX) * cw + pad * 2);
+                            const boxH = Math.min(ch - boxY, (maxY - minY) * ch + pad * 2);
+
+                            const color = isFocusedOnScreen ? '#10b981' : '#f43f5e';
+                            ctx.strokeStyle = color;
+                            ctx.lineWidth = 3;
+
+                            // Draw high-tech corner brackets around face
+                            const cornerLen = Math.min(25, boxW / 4, boxH / 4);
+                            ctx.beginPath();
+                            // Top-left
+                            ctx.moveTo(boxX, boxY + cornerLen);
+                            ctx.lineTo(boxX, boxY);
+                            ctx.lineTo(boxX + cornerLen, boxY);
+                            // Top-right
+                            ctx.moveTo(boxX + boxW - cornerLen, boxY);
+                            ctx.lineTo(boxX + boxW, boxY);
+                            ctx.lineTo(boxX + boxW, boxY + cornerLen);
+                            // Bottom-left
+                            ctx.moveTo(boxX, boxY + boxH - cornerLen);
+                            ctx.lineTo(boxX, boxY + boxH);
+                            ctx.lineTo(boxX + cornerLen, boxY + boxH);
+                            // Bottom-right
+                            ctx.moveTo(boxX + boxW - cornerLen, boxY + boxH);
+                            ctx.lineTo(boxX + boxW, boxY + boxH);
+                            ctx.lineTo(boxX + boxW, boxY + cornerLen);
+                            ctx.stroke();
+
+                            // Draw pupil tracking markers
+                            ctx.fillStyle = color;
+                            if (landmarks[468]) {
+                                ctx.beginPath();
+                                ctx.arc(landmarks[468].x * cw, landmarks[468].y * ch, 4, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                            if (landmarks[473]) {
+                                ctx.beginPath();
+                                ctx.arc(landmarks[473].x * cw, landmarks[473].y * ch, 4, 0, Math.PI * 2);
+                                ctx.fill();
                             }
                         }
-                        
-                        // Fallback to absolute nose landmark if eye sockets cannot be resolved
-                        const gazePoint = landmarks[1] || { x: 0.5, y: 0.5 };
-                        this.latestGazeCoords = {
-                            x: Math.round(gazePoint.x * 1000) / 1000,
-                            y: Math.round(gazePoint.y * 1000) / 1000
-                        };
+
+                        // 4. Update UI Status Badge & Coordinates for Backend
+                        if (isFocusedOnScreen) {
+                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-screen";
+                            if (gazeText) gazeText.textContent = "🟢 Screen Focused";
+                            this.latestGazeCoords = { x: 0.50, y: 0.50 };
+                        } else if (pitchRatio > 1.65 || isEyeDown) {
+                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
+                            if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Phone / Lap";
+                            this.latestGazeCoords = { x: 0.50, y: 0.95 };
+                        } else {
+                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
+                            if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Side Display";
+                            const sideX = headYaw > 0 ? 0.95 : 0.05;
+                            this.latestGazeCoords = { x: sideX, y: 0.50 };
+                        }
+
+                    } else {
+                        // No face detected in frame
+                        if (gazeBadge) gazeBadge.className = "gaze-status-badge no-face";
+                        if (gazeText) gazeText.textContent = "⚠️ No Face Detected";
+                        this.latestGazeCoords = { x: 0.0, y: 0.0 };
                     }
                 });
 
-                // Frame processing loop
-                const processFrame = async () => {
-                    if (this.videoElem && !this.videoElem.paused && !this.videoElem.ended) {
-                        await this.faceMesh.send({ image: this.videoElem });
-                    }
-                    requestAnimationFrame(processFrame);
-                };
-                processFrame();
+                // Frame processing with MediaPipe Camera or smooth animation loop
+                if (window.Camera && previewVideo) {
+                    const camera = new window.Camera(previewVideo, {
+                        onFrame: async () => {
+                            if (previewVideo && !previewVideo.paused && !previewVideo.ended) {
+                                await this.faceMesh.send({ image: previewVideo });
+                            }
+                        },
+                        width: 640,
+                        height: 480
+                    });
+                    camera.start();
+                    console.log("[Candidate Capture] MediaPipe Camera controller active.");
+                } else if (previewVideo) {
+                    const processFrame = async () => {
+                        if (previewVideo && !previewVideo.paused && !previewVideo.ended) {
+                            await this.faceMesh.send({ image: previewVideo });
+                        }
+                        requestAnimationFrame(processFrame);
+                    };
+                    processFrame();
+                }
 
-                // Send gaze samples ~5x per second
+                // Stream gaze samples ~5x per second during answering window
                 this.gazeSampleInterval = setInterval(() => {
                     if (this.isAnswering) {
                         this.wsClient.send({
@@ -201,9 +257,9 @@ class CandidateCapture {
                     }
                 }, 200);
 
-                console.log("[Candidate Capture] MediaPipe FaceMesh active at ~5Hz.");
+                console.log("[Candidate Capture] FaceMesh + Live Proctoring overlay initialized.");
             } else {
-                console.warn("[Candidate Capture] MediaPipe FaceMesh library not found. Running gaze fallback.");
+                console.warn("[Candidate Capture] MediaPipe FaceMesh library not found. Running fallback.");
             }
 
         } catch (err) {

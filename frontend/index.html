@@ -84,21 +84,20 @@
                     </div>
                 </div>
 
-                <div style="display: flex; flex-direction: column; align-items: center; gap: 0.5rem;">
-                    <div id="calibration-hint" style="color: var(--text-secondary); font-size: 0.85rem; display: none;">
-                        Please look straight at the center of your screen and click Calibrate.
-                    </div>
-                    <div style="display: flex; justify-content: center; gap: 1rem;">
-                        <button id="btn-calibrate-gaze" class="btn btn-secondary" style="display: none;">🎯 Calibrate Eye Tracker</button>
-                        <button id="btn-start-interview" class="btn btn-primary" style="display: none;">Start Interview</button>
-                        <button id="btn-done-answering" class="btn btn-secondary" style="display: none;">Done Answering</button>
-                    </div>
+                <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 1rem;">
+                    <button id="btn-start-interview" class="btn btn-primary" style="display: none;">🚀 Start Interview</button>
+                    <button id="btn-done-answering" class="btn btn-secondary" style="display: none;">✓ Done Answering</button>
                 </div>
             </div>
 
-            <!-- Client Camera Preview Bubble (Bottom Right) -->
-            <div class="camera-bubble">
+            <!-- Client Camera Preview Bubble (Bottom Right) with Real-Time Face & Gaze Proctoring Overlay -->
+            <div class="camera-bubble" id="camera-bubble-container">
                 <video id="preview-video" autoplay playsinline muted></video>
+                <canvas id="camera-overlay"></canvas>
+                <div id="gaze-badge" class="gaze-status-badge looking-screen">
+                    <span class="badge-dot"></span>
+                    <span id="gaze-status-text">Detecting Face...</span>
+                </div>
             </div>
         </section>
     </main>
@@ -175,42 +174,17 @@
 
             // Initialize Consent Screen gating camera/mic
             captureEngine.initConsentModal(
-                // onConsentCallback:
                 null,
-                // onCaptureInitialized:
                 () => {
-                    // Show calibration UI once consent is given and camera active
-                    document.getElementById("calibration-hint").style.display = "block";
-                    document.getElementById("btn-calibrate-gaze").style.display = "inline-flex";
+                    // Show Start Interview button as soon as camera feed & face mesh are initialized
+                    document.getElementById("btn-start-interview").style.display = "inline-flex";
                 }
             );
 
             // Set up interview start flow
-            const btnCalibrate = document.getElementById("btn-calibrate-gaze");
             const btnStart = document.getElementById("btn-start-interview");
             const btnDone = document.getElementById("btn-done-answering");
             const wave = document.getElementById("tts-wave");
-
-            btnCalibrate.addEventListener("click", () => {
-                btnCalibrate.disabled = true;
-                btnCalibrate.textContent = "🎯 Calibrating... Keep looking straight";
-                
-                captureEngine.startCalibration(
-                    // onProgress:
-                    (samplesCount) => {
-                        btnCalibrate.textContent = `🎯 Calibrating... ${Math.round(samplesCount / 60 * 100)}%`;
-                    },
-                    // onComplete:
-                    () => {
-                        btnCalibrate.textContent = "Calibration Success! 🎯";
-                        document.getElementById("calibration-hint").style.display = "none";
-                        setTimeout(() => {
-                            btnCalibrate.style.display = "none";
-                            btnStart.style.display = "inline-flex";
-                        }, 800);
-                    }
-                );
-            });
 
             btnStart.addEventListener("click", () => {
                 wsClient.send({ type: "start_interview" });
