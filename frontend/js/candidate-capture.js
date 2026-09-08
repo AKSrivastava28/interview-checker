@@ -153,15 +153,20 @@ class CandidateCapture {
                         const faceW = Math.abs(cheekL.x - cheekR.x) || 0.1;
                         const midCheekX = (cheekR.x + cheekL.x) / 2;
 
-                        // Head Yaw: horizontal rotation (normal: -0.12 to +0.12)
+                        // 1. Head Yaw: horizontal rotation (normal screen: -0.06 to +0.06; iPad/side screen: > 0.085 or < -0.085)
                         const headYaw = (nose.x - midCheekX) / faceW;
 
-                        // Head Pitch: forehead-to-nose vs nose-to-chin ratio (normal: 0.75 - 1.55)
+                        // 2. Head Pitch: forehead-to-nose vs nose-to-chin (normal: 0.80 - 1.25; nodding down at iPad/desk: > 1.30)
                         const dForehead = Math.abs(nose.y - forehead.y);
                         const dChin = Math.abs(chin.y - nose.y);
                         const pitchRatio = dForehead / (dChin + 0.001);
 
-                        // Eye Drop: iris distance below nose bridge relative to face size
+                        // 3. Head Roll (lateral tilt): difference in height between eye outer corners
+                        const eyeOuterR = landmarks[33];
+                        const eyeOuterL = landmarks[263];
+                        const headRoll = (eyeOuterL.y - eyeOuterR.y) / faceW;
+
+                        // 4. Eye Drop: iris distance below nose bridge (normal: 0.18 - 0.28; looking down at desk: > 0.30)
                         let eyeDrop = 0;
                         if (landmarks[468] && noseBridge) {
                             eyeDrop = (landmarks[468].y - noseBridge.y) / faceW;
@@ -187,13 +192,18 @@ class CandidateCapture {
                         const pupilGazeX = (disp1X + disp2X) / 2;
                         const pupilGazeY = (disp1Y + disp2Y) / 2;
 
-                        // Physical Head & Gaze Orientation
-                        // Safe zone: Looking anywhere at the screen/interviewer/question text is 100% CLEAN
-                        const isYawOk = Math.abs(headYaw) < 0.22;
-                        const isPitchOk = pitchRatio >= 0.60 && pitchRatio <= 1.85;
-                        const isEyeDown = eyeDrop > 0.42;
+                        // 5. Combined Horizontal Gaze: head rotation + iris displacement within eye sockets
+                        // When looking at an iPad on the left: head yaw is negative and irises shift left
+                        const totalHorizGaze = headYaw + (pupilGazeX * 0.25);
 
-                        const isFocusedOnScreen = isYawOk && isPitchOk && !isEyeDown;
+                        // Calibrated physical bounds:
+                        const isYawOk = Math.abs(headYaw) <= 0.085;
+                        const isPitchOk = pitchRatio >= 0.65 && pitchRatio <= 1.30;
+                        const isEyeDown = eyeDrop > 0.30;
+                        const isRollOk = Math.abs(headRoll) <= 0.075;
+                        const isGazeCentered = Math.abs(totalHorizGaze) <= 0.095;
+
+                        const isFocusedOnScreen = isYawOk && isPitchOk && !isEyeDown && isRollOk && isGazeCentered;
 
                         // 3. Draw Proctoring Overlay on Canvas
                         if (ctx && overlayCanvas) {
@@ -248,16 +258,27 @@ class CandidateCapture {
 
                         // 4. Update UI Status Badge & Coordinates for Backend
                         if (!isFocusedOnScreen) {
-                            if (pitchRatio > 1.85 || isEyeDown) {
-                                if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
-                                if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Looking Down / Phone";
-                                this.latestGazeCoords = { x: 0.50, y: 0.95, reading_detected: false, reading_type: "" };
-                            } else {
-                                if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
-                                if (gazeText) gazeText.textContent = "🔴 Gaze Alert: Looking Away / 2nd Monitor";
-                                const sideX = headYaw > 0 ? 0.95 : 0.05;
-                                this.latestGazeCoords = { x: sideX, y: 0.50, reading_detected: false, reading_type: "" };
+                            let alertText = "🔴 Gaze Alert: Looking Away";
+                            let sideX = 0.50;
+                            let sideY = 0.50;
+
+                            if (pitchRatio > 1.30 || isEyeDown) {
+                                alertText = "🔴 Gaze Alert: Looking Down / Desk Device (iPad/Phone)";
+                                sideY = 0.95;
+                            } else if (!isRollOk) {
+                                const tiltDir = headRoll > 0 ? "Left" : "Right";
+                                alertText = `🔴 Gaze Alert: Head Tilted Sideways (${tiltDir})`;
+                                sideX = headRoll > 0 ? 0.05 : 0.95;
+                            } else if (!isYawOk || !isGazeCentered) {
+                                const turnDir = totalHorizGaze < 0 ? "Left (iPad/Side Device)" : "Right (2nd Screen)";
+                                alertText = `🔴 Gaze Alert: Looking ${turnDir}`;
+                                sideX = totalHorizGaze < 0 ? 0.05 : 0.95;
                             }
+
+                            if (gazeBadge) gazeBadge.className = "gaze-status-badge looking-away";
+                            if (gazeText) gazeText.textContent = alertText;
+                            this.latestGazeCoords = { x: sideX, y: sideY, reading_detected: false, reading_type: "" };
+
                             if (cameraBubble) {
                                 cameraBubble.className = "camera-bubble face-aligned face-lost";
                             }

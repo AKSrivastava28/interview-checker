@@ -20,7 +20,8 @@ class RiskAggregator:
         ai_likeness_score: int,
         reading_pct: float = 0.0,
         speech_reading_score: int = 0,
-        fullscreen_exit_count: int = 0
+        fullscreen_exit_count: int = 0,
+        total_words: int = 0
     ) -> Tuple[str, float, Dict[str, float]]:
         """
         Combines multi-modal signals into a normalized risk score (0-100) and risk label.
@@ -29,7 +30,7 @@ class RiskAggregator:
         # Normalize prompt latency (e.g. 0-2s = 0, 8s+ = 100)
         pause_norm = min(100.0, max(0.0, (pause_s - 1.5) / 6.5 * 100.0))
 
-        # Gaze offscreen percentage (physical phone/2nd monitor turns)
+        # Gaze offscreen percentage (physical phone/iPad/2nd monitor turns)
         gaze_norm = min(100.0, max(0.0, gaze_offscreen_pct))
 
         # Desktop/Window infractions (blur + fullscreen exit)
@@ -52,13 +53,20 @@ class RiskAggregator:
 
         composite_score = round(composite_score, 1)
 
+        # Non-responsive / Empty Answer Evaluation:
+        # A candidate who submitted no audible speech or fewer than 4 words did not answer the technical question
+        if total_words < 4:
+            if gaze_offscreen_pct > 5.0 or total_focus_violations >= 1.0:
+                label = "high_risk"
+            else:
+                label = "suspicious"
         # High-confidence correlated overrides:
         # If candidate reads AI text (both speech rhythm and text likeness agree):
-        if speech_reading_score >= 60 and ai_likeness_score >= 50:
+        elif speech_reading_score >= 60 and ai_likeness_score >= 50:
             label = "high_risk"
-        elif total_focus_violations >= 2.0 or gaze_offscreen_pct > 65.0:
+        elif total_focus_violations >= 2.0 or gaze_offscreen_pct > 40.0:
             label = "high_risk"
-        elif speech_reading_score >= 40 or total_focus_violations >= 1.0 or gaze_offscreen_pct > 35.0 or ai_likeness_score >= 60:
+        elif speech_reading_score >= 40 or total_focus_violations >= 1.0 or gaze_offscreen_pct > 18.0 or ai_likeness_score >= 60:
             label = "suspicious"
         elif composite_score < CLEAN_MAX_SCORE:
             label = "clean"

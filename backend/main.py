@@ -189,22 +189,33 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
     if not full_transcript and win.transcript_chunks:
         full_transcript = win.transcript_chunks[-1].get("text", "").strip()
 
-    ai_result = await ai_scorer.analyze_transcript(full_transcript, win.question_text)
+    word_count = len(full_transcript.split()) if full_transcript else 0
+    ai_score_val = 0
 
-    ai_rationale = ai_result.rationale
-    ai_rationale += f" [Speech Flow] {speech_rationale}"
-    if blur_count > 0 or fullscreen_exit_count > 0:
-        ai_rationale += f" [Focus Alert] {blur_count} window blur(s), {fullscreen_exit_count} fullscreen exit(s)."
+    if word_count < 4:
+        speech_delivery_label = "non_responsive"
+        speech_reading_score = 0
+        ai_rationale = "[Non-Responsive Alert] Candidate provided no audible technical answer for this question."
+        if gaze_offscreen_pct > 5.0:
+            ai_rationale += f" [Integrity Violation] Candidate was looking away at an external device ({gaze_offscreen_pct}% offscreen gaze) while failing to answer."
+    else:
+        ai_result = await ai_scorer.analyze_transcript(full_transcript, win.question_text)
+        ai_score_val = ai_result.score
+        ai_rationale = ai_result.rationale
+        ai_rationale += f" [Speech Flow] {speech_rationale}"
+        if blur_count > 0 or fullscreen_exit_count > 0:
+            ai_rationale += f" [Focus Alert] {blur_count} window blur(s), {fullscreen_exit_count} fullscreen exit(s)."
 
     # 5. Multi-Signal Risk Aggregator
     risk_label, composite_score, breakdown = RiskAggregator.compute_risk(
         pause_s=pause_s,
         gaze_offscreen_pct=gaze_offscreen_pct,
         blur_count=blur_count,
-        ai_likeness_score=ai_result.score,
+        ai_likeness_score=ai_score_val,
         reading_pct=float(speech_reading_score),
         speech_reading_score=speech_reading_score,
-        fullscreen_exit_count=fullscreen_exit_count
+        fullscreen_exit_count=fullscreen_exit_count,
+        total_words=word_count
     )
 
     analysis_res = QuestionAnalysisResult(
@@ -217,7 +228,7 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
         speech_delivery=speech_delivery_label,
         blur_count=blur_count,
         fullscreen_exit_count=fullscreen_exit_count,
-        ai_likeness_score=ai_result.score,
+        ai_likeness_score=ai_score_val,
         ai_rationale=ai_rationale,
         risk=risk_label,
         transcript_text=full_transcript,

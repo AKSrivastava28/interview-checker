@@ -34,8 +34,8 @@ class SpeechAnalyzer:
                 "pauses_per_minute": 0.0,
                 "cadence_variance": 0.0,
                 "reading_cadence_score": 0,
-                "delivery_style": "spontaneous",
-                "rationale": "Insufficient speech samples recorded."
+                "delivery_style": "non_responsive",
+                "rationale": "Non-responsive: No audible candidate speech recorded for this question."
             }
 
         first_speech_ts = transcript_chunks[0].get("ts", question_start_ts)
