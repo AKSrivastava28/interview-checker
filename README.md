@@ -1,4 +1,4 @@
-# Interview Integrity Engine 🛡️
+# Interview Integrity Engine 
 ### Real-Time Multi-Modal Anti-Cheating & AI Detection System for Live Technical Interviews
 
 A zero-install, real-time interview integrity system designed to detect candidates secretly using modern AI tools (**ChatGPT, Claude, Perplexity, teleprompter HUDs, Cluely, secondary monitors, or audio earpieces**) during live video interviews.
@@ -7,7 +7,7 @@ Unlike legacy proctoring tools that merely check for browser tab switching, this
 
 ---
 
-## ⚡ Why Traditional Proctoring Fails Against Modern AI Cheating
+##  Why Traditional Proctoring Fails Against Modern AI Cheating
 
 Modern technical interview cheaters do not trigger standard proctoring alerts:
 
@@ -20,7 +20,7 @@ Modern technical interview cheaters do not trigger standard proctoring alerts:
 
 ---
 
-## 📐 System Architecture
+## System Architecture
 
 ```mermaid
 graph TD
@@ -64,7 +64,7 @@ graph TD
 
 ---
 
-## 🔬 Multi-Modal Sensor Suite & Mathematical Foundations
+## Multi-Modal Sensor Suite & Mathematical Foundations
 
 ### 1. Temporal Speech Cadence & Pause Distribution Analyzer (`backend/analyzers/speech_analyzer.py`)
 Human conceptualization requires intermittent cognitive hesitations ($0.85\text{s} - 2.5\text{s}$) as the brain plans the next syntactic clause. In contrast, **reading aloud produces continuous, metronomic vocal output**:
@@ -102,7 +102,7 @@ Powered by Groq's high-speed inference (`qwen/qwen3.8-27b`), this evaluator spec
 
 ---
 
-## 🖥️ User Experience & Interfaces
+##  User Experience & Interfaces
 
 ### 1. Candidate Portal (`/`)
 * Seamless single-page application with camera and microphone preview.
@@ -122,7 +122,7 @@ Powered by Groq's high-speed inference (`qwen/qwen3.8-27b`), this evaluator spec
 
 ---
 
-## 🚀 Quickstart & Installation
+## Quickstart & Installation
 
 ### Prerequisites
 * Python 3.9+
