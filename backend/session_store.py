@@ -76,6 +76,10 @@ class SessionStore:
     def session_exists(self, session_id: str) -> bool:
         return session_id in self._sessions
 
+    @property
+    def sessions(self) -> Dict[str, SessionState]:
+        return self._sessions
+
 
 # Global singleton instance
 session_store = SessionStore()

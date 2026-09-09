@@ -1,7 +1,9 @@
 class CandidateCapture {
-    constructor(wsClient, voiceEngine) {
+    constructor(wsClient, voiceEngine, sessionId = "") {
         this.wsClient = wsClient;
         this.voiceEngine = voiceEngine;
+        this.sessionId = sessionId || wsClient?.sessionId || wsClient?.roomId || "";
+        this.audioStream = null;
         this.consentGiven = false;
         
         this.faceMesh = null;
@@ -34,6 +36,10 @@ class CandidateCapture {
         // Head pose dynamism / teleprompter freeze tracking
         this.headPoseSamples = [];
         this.eyebrowSamples = [];
+
+        // Audio recording for Whisper STT
+        this.mediaRecorder = null;
+        this.audioChunks = [];
     }
 
     initConsentModal(onConsentCallback, onCaptureInitialized) {
@@ -80,6 +86,9 @@ class CandidateCapture {
 
         // 4. Setup Acoustic Prosody Tracker
         this.setupAcousticTracker();
+
+        // 5. Setup Audio MediaRecorder for Whisper STT
+        this.setupMediaRecorder();
     }
 
     async setupMediaPipeGaze() {
@@ -566,6 +575,17 @@ class CandidateCapture {
         }
     }
 
+    setupMediaRecorder() {
+        try {
+            const audioTracks = this.stream ? this.stream.getAudioTracks() : [];
+            if (audioTracks.length === 0) return;
+            this.audioStream = new MediaStream([audioTracks[0]]);
+            console.log("[Candidate Capture] audioStream configured for Whisper STT recording.");
+        } catch (e) {
+            console.warn("[Candidate Capture] setupMediaRecorder warning:", e);
+        }
+    }
+
     detectFundamentalFrequency(buffer, sampleRate) {
         const bufferSize = buffer.length;
         
@@ -612,8 +632,8 @@ class CandidateCapture {
             }
         }
 
-        // Check if periodic signal peak meets confidence (strict threshold to avoid consonants/noise)
-        if (bestCorrelation > 0.78 && bestPeriod > 0) {
+        // Check if periodic signal peak meets confidence (tuned to 0.65 to capture dynamic speech transitions)
+        if (bestCorrelation > 0.65 && bestPeriod > 0) {
             return sampleRate / bestPeriod;
         }
         return null;
@@ -657,9 +677,9 @@ class CandidateCapture {
             };
         }
 
-        // Outlier Rejection: Sort and trim top 15% & bottom 15% (removes octave errors / consonant spikes)
+        // Outlier Rejection: Gentle 2.5% trim to filter mic clicks while preserving 95% of human pitch inflection
         const sorted = [...samples].sort((a, b) => a - b);
-        const trimCount = Math.floor(sorted.length * 0.15);
+        const trimCount = Math.floor(sorted.length * 0.025);
         const coreSamples = trimCount > 0 ? sorted.slice(trimCount, sorted.length - trimCount) : sorted;
 
         const mean = coreSamples.reduce((a, b) => a + b, 0) / coreSamples.length;
@@ -709,6 +729,31 @@ class CandidateCapture {
         this.headPoseSamples = [];
         this.eyebrowSamples = [];
         
+        // Start fresh audio recording for Whisper STT
+        this.audioChunks = [];
+        if (this.audioStream) {
+            try {
+                let mimeType = 'audio/webm;codecs=opus';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = 'audio/webm';
+                    if (!MediaRecorder.isTypeSupported(mimeType)) {
+                        mimeType = '';
+                    }
+                }
+                const options = mimeType ? { mimeType } : {};
+                this.mediaRecorder = new MediaRecorder(this.audioStream, options);
+                this.mediaRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        this.audioChunks.push(event.data);
+                    }
+                };
+                this.mediaRecorder.start(250);
+                console.log("[Candidate Capture] Fresh MediaRecorder started for answer window. MimeType:", mimeType || "default");
+            } catch (e) {
+                console.warn("[Candidate Capture] MediaRecorder start error:", e);
+            }
+        }
+
         // Clear text field
         const transcriptBox = document.getElementById("live-transcript");
         if (transcriptBox) transcriptBox.textContent = "Listening to your response...";
@@ -717,23 +762,94 @@ class CandidateCapture {
         this.startPitchTracking();
     }
 
-    triggerDoneAnswering() {
+    async triggerDoneAnswering() {
         if (!this.isAnswering) return;
         this.isAnswering = false;
 
         this.stopSpeechRecognition();
         const acousticFeatures = this.stopPitchTracking();
 
+        const transcriptBox = document.getElementById("live-transcript");
+        if (transcriptBox) transcriptBox.textContent = "Transcribing response with Groq Whisper...";
+
+        // Stop MediaRecorder and request Groq Whisper transcription
+        let whisperTranscript = "";
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+            try {
+                await new Promise((resolve) => {
+                    const timer = setTimeout(resolve, 800);
+                    this.mediaRecorder.onstop = () => {
+                        clearTimeout(timer);
+                        resolve();
+                    };
+                    try {
+                        this.mediaRecorder.stop();
+                    } catch (e) {
+                        clearTimeout(timer);
+                        resolve();
+                    }
+                });
+
+                if (this.audioChunks && this.audioChunks.length > 0) {
+                    const audioBlob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
+                    console.log(`[Candidate Capture] Captured audio size: ${audioBlob.size} bytes across ${this.audioChunks.length} chunks.`);
+
+                    if (audioBlob.size > 500) {
+                        let targetSessionId = this.sessionId || this.wsClient?.sessionId || this.wsClient?.roomId || "";
+                        if (!targetSessionId || targetSessionId === 'undefined') {
+                            targetSessionId = new URLSearchParams(window.location.search).get('session_id') || "";
+                        }
+
+                        const formData = new FormData();
+                        formData.append("file", audioBlob, "answer.webm");
+
+                        console.log(`[Candidate Capture] Uploading audio to /api/transcribe/${targetSessionId}...`);
+                        const controller = new AbortController();
+                        const fetchTimer = setTimeout(() => controller.abort(), 5000);
+
+                        try {
+                            const resp = await fetch(`/api/transcribe/${targetSessionId}`, {
+                                method: "POST",
+                                body: formData,
+                                signal: controller.signal
+                            });
+                            clearTimeout(fetchTimer);
+
+                            if (resp.ok) {
+                                const resData = await resp.json();
+                                whisperTranscript = resData.transcript || "";
+                                console.log("[Candidate Capture] Groq Whisper transcript success:", whisperTranscript);
+                                if (transcriptBox && whisperTranscript) {
+                                    transcriptBox.textContent = `"${whisperTranscript}"`;
+                                }
+                            } else {
+                                console.warn(`[Candidate Capture] /api/transcribe returned HTTP ${resp.status}`);
+                            }
+                        } catch (fErr) {
+                            clearTimeout(fetchTimer);
+                            console.warn("[Candidate Capture] Whisper transcription fetch timed out or failed:", fErr);
+                        }
+                    } else {
+                        console.warn(`[Candidate Capture] Audio too small (${audioBlob.size} bytes) for Whisper.`);
+                    }
+                }
+            } catch (err) {
+                console.warn("[Candidate Capture] Whisper transcription error, falling back to browser STT:", err);
+            }
+        }
+
         console.log("[Candidate Capture] Acoustic & Posture summary:", acousticFeatures);
 
         this.wsClient.send({
             type: "done_answering",
             ts: Date.now() / 1000.0,
-            acoustic_features: acousticFeatures
+            acoustic_features: acousticFeatures,
+            whisper_transcript: whisperTranscript
         });
 
-        const transcriptBox = document.getElementById("live-transcript");
-        if (transcriptBox) transcriptBox.textContent = "Analyzing response integrity...";
+        if (transcriptBox && !whisperTranscript) {
+            transcriptBox.textContent = "Analyzing response integrity...";
+        }
     }
 }
 

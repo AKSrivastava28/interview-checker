@@ -76,7 +76,7 @@ class ReviewerDashboard {
             <div id="q-card-${result.question_n}" class="evidence-card ${riskClass}">
                 <div class="card-header">
                     <strong style="font-size:1.1rem; color:var(--text-primary);">Question ${result.question_n}</strong>
-                    <span class="risk-badge ${riskClass}">${riskTitle}</span>
+                    <span class="risk-badge ${riskClass}">${riskTitle} (${Math.round(result.confidence_pct || 85)}% Conf.)</span>
                 </div>
                 
                 <div style="font-size:0.95rem; font-weight:500; color:var(--text-primary); margin-bottom:1rem;">

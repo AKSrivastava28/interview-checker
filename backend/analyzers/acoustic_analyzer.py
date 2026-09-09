@@ -74,37 +74,54 @@ class AcousticAnalyzer:
         is_rigid_head = bool(acoustic_features.get("is_rigid_head", False))
         head_motion_std = float(acoustic_features.get("head_motion_std", 0.015))
 
-        # 1. Pitch Variance / Monotone Test:
-        # A normal spontaneous voice has pitch inflections (std dev > 22 Hz).
-        # Reading from a teleprompter / notes flattens vocal modulation (std dev < 18 Hz).
-        if pitch_std < 14.0:
-            prosody_score += 45
-            reasons.append(f"Monotone reading drone (vocal pitch std dev {pitch_std:.1f} Hz < 14 Hz)")
-        elif pitch_std < 19.0:
-            prosody_score += 25
-            reasons.append(f"Low vocal inflection (pitch std dev {pitch_std:.1f} Hz)")
-        elif pitch_std >= 25.0:
+        # Calculate relative pitch variation (Coefficient of Variation)
+        # Accounts for natural lower base pitch (male voices ~100-140 Hz naturally have lower Hz spread than female ~200-240 Hz)
+        pitch_ratio = (pitch_std / mean_pitch) if mean_pitch > 60.0 else (pitch_std / 140.0)
+        is_low_register = 70.0 <= mean_pitch <= 145.0
+
+        # 1. Pitch Variance / Monotone Test (Biological Ground Truth):
+        # A true biological flatline drone has pitch std dev < 4.0 Hz or pitch ratio < 3.0%.
+        # A calm, deliberate conversational voice (especially in lower register) sits between 5.0 - 10.0 Hz.
+        # Expressive human speech modulates with std dev >= 15.0 Hz (or ratio >= 9.0%).
+        if pitch_std < 4.0 or pitch_ratio < 0.030:
+            prosody_score += 85
+            reasons.append(f"Acoustic Flatline Drone: vocal pitch std dev {pitch_std:.1f} Hz (< 4.0 Hz / {pitch_ratio*100:.1f}% ratio)")
+        elif pitch_std < 7.5 and not is_low_register:
+            prosody_score += 65
+            reasons.append(f"Monotone reading drone: vocal pitch std dev {pitch_std:.1f} Hz")
+        elif pitch_std < 7.5 and is_low_register:
+            prosody_score += 35
+            reasons.append(f"Calm low-register pitch: std dev {pitch_std:.1f} Hz ({pitch_ratio*100:.1f}% ratio)")
+        elif pitch_std < 14.0:
+            prosody_score += 20
+            reasons.append(f"Controlled steady inflection: pitch std dev {pitch_std:.1f} Hz")
+        elif pitch_std >= 20.0:
             prosody_score = max(0, prosody_score - 25)
 
-        # 2. Cognitive Disfluency Test:
-        # Honest human thinking produces natural fillers and self-corrections
+        # 2. Cognitive Disfluency & Natural Speech Repair Test:
         total_cognitive_markers = disfluency_count + (self_repair_count * 2)
-        if total_cognitive_markers == 0 and word_count >= 16:
-            prosody_score += 35
-            reasons.append(f"Zero cognitive fillers or self-corrections across {word_count} words")
-        elif total_cognitive_markers >= 2:
-            prosody_score = max(0, prosody_score - 30)
+        if total_cognitive_markers >= 3 and word_count >= 16:
+            # Candidate is frequently using thinking fillers ("basically", "actually", "let's suppose")
+            # This demonstrates spontaneous cognitive retrieval
+            prosody_score = max(10, prosody_score - 30)
+            reasons.append(f"Frequent conversational fillers ({total_cognitive_markers} markers) indicate spontaneous formulation")
+        elif total_cognitive_markers == 0 and word_count >= 18:
+            prosody_score += 25
+            reasons.append(f"Zero cognitive fillers across {word_count} words (script recitation pattern)")
 
         # 3. Teleprompter Stillness Test (Robotic head rigidity while speaking):
         if is_rigid_head or (0 < head_motion_std < 0.0045):
-            prosody_score += 30
-            reasons.append(f"Rigid Teleprompter Freeze: Unnatural lack of head movement (std dev {head_motion_std:.4f} < 0.0045) while reciting")
+            prosody_score += 20
+            reasons.append(f"Rigid Teleprompter Freeze: Lack of head movement (std dev {head_motion_std:.4f} < 0.0045) while reciting")
 
         prosody_score = min(100, max(0, prosody_score))
 
-        if prosody_score >= 45 or pitch_std < 16.0 or (is_rigid_head and total_cognitive_markers == 0):
+        if prosody_score >= 70 or (pitch_std < 4.0 and total_cognitive_markers <= 1):
             vocal_style = "monotone_drone"
             rationale = "Monotone Teleprompter Drone: " + "; ".join(reasons)
+        elif prosody_score >= 35 or pitch_std < 12.0:
+            vocal_style = "calm_steady"
+            rationale = "Calm Steady Voice: " + "; ".join(reasons)
         else:
             vocal_style = "expressive"
             rationale = f"Expressive Vocal Modulation ({pitch_std:.1f} Hz pitch std dev, {total_cognitive_markers} cognitive markers)."

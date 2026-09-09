@@ -22,10 +22,15 @@ class EventSignal(BaseSignal):
 class AILikenessResult(BaseModel):
     score: int = Field(ge=0, le=100)
     rationale: str
+    stall_detected: bool = False
+    stall_buffer: str = ""
+    substantive_core: str = ""
+    effective_latency_offset_s: float = 0.0
 
 class QuestionAnalysisResult(BaseModel):
     question_n: int
     pause_s: float
+    effective_latency_s: float = 0.0
     gaze_offscreen_pct: float
     reading_pct: float = 0.0
     speech_reading_score: int = 0
@@ -37,6 +42,9 @@ class QuestionAnalysisResult(BaseModel):
     fullscreen_exit_count: int = 0
     ai_likeness_score: int
     ai_rationale: str
+    stall_detected: bool = False
+    stall_buffer: str = ""
+    confidence_pct: float = 85.0
     risk: str  # clean | suspicious | high_risk
     transcript_text: str
     question_text: str = ""

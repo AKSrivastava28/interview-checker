@@ -126,9 +126,9 @@
     </main>
 
     <!-- JS modules -->
-    <script src="/static/js/websocket-client.js?v=20260909_3"></script>
-    <script src="/static/js/interviewer-ui.js?v=20260909_3"></script>
-    <script src="/static/js/candidate-capture.js?v=20260909_3"></script>
+    <script src="/static/js/websocket-client.js?v=20260909_5"></script>
+    <script src="/static/js/interviewer-ui.js?v=20260909_5"></script>
+    <script src="/static/js/candidate-capture.js?v=20260909_5"></script>
 
     <script>
         let sessionId = null;
@@ -193,14 +193,32 @@
             wsClient.connect();
 
             voiceEngine = new InterviewerVoice();
-            captureEngine = new CandidateCapture(wsClient, voiceEngine);
+            captureEngine = new CandidateCapture(wsClient, voiceEngine, sessionId);
 
             let isInterviewActive = false;
+            let isInterviewComplete = false;
             const btnStart = document.getElementById("btn-start-interview");
             const btnDone = document.getElementById("btn-done-answering");
             const wave = document.getElementById("tts-wave");
             const faceAlertBanner = document.getElementById("face-alert-banner");
             const faceAlertText = document.getElementById("face-alert-text");
+
+            function showInterviewCompleteUI() {
+                isInterviewComplete = true;
+                btnDone.style.display = "none";
+                if (voiceEngine) voiceEngine.stop();
+                document.getElementById("question-number").textContent = "Interview Finished";
+                document.getElementById("question-text").textContent = "Mock Interview Complete!";
+                document.getElementById("live-transcript").innerHTML = `
+                    <div style="text-align: center; padding: 1.5rem;">
+                        <h3 style="color: #38bdf8; margin-bottom: 0.5rem;">🎉 Interview Complete!</h3>
+                        <p style="color: #94a3b8; margin-bottom: 1.5rem;">Your integrity audit report has been compiled with all multi-signal metrics.</p>
+                        <a href="/report/${sessionId}" target="_blank" class="btn btn-primary" style="font-size: 1.1rem; padding: 0.8rem 2rem; text-decoration: none; display: inline-block;">
+                            📊 View Final Audit Report
+                        </a>
+                    </div>
+                `;
+            }
 
             // Face detection watcher: gate starting and alert during interview
             captureEngine.onFaceStatusChanged = (isFacePresent, isFocused) => {
@@ -258,13 +276,26 @@
                 document.getElementById("fullscreen-modal").style.display = "none";
             });
 
-            btnDone.addEventListener("click", () => {
-                captureEngine.triggerDoneAnswering();
+            btnDone.addEventListener("click", async () => {
+                btnDone.disabled = true;
+                btnDone.textContent = "Transcribing with Whisper...";
+                try {
+                    await captureEngine.triggerDoneAnswering();
+                } catch (e) {
+                    console.error("[Candidate Capture] triggerDoneAnswering error:", e);
+                }
+                // Safety timer: if on Question 2 of 2, ensure completion UI renders after 4s
+                const qNumText = document.getElementById("question-number").textContent;
+                if (qNumText.includes("2 of 2") || qNumText.includes("Question 2")) {
+                    setTimeout(() => {
+                        showInterviewCompleteUI();
+                    }, 4000);
+                }
             });
 
             // WebSocket Events
             wsClient.on("new_question", (data) => {
-                const maxQ = data.max_questions || 5;
+                const maxQ = data.max_questions || 2;
                 document.getElementById("question-number").textContent = `Question ${data.question_n} of ${maxQ}`;
                 document.getElementById("question-text").textContent = data.question_text;
                 
@@ -282,14 +313,18 @@
                         wave.classList.remove("active");
                         wsClient.send({ type: "question_speaking_finished" });
                         captureEngine.startAnswerWindow();
+                        btnDone.disabled = false;
+                        btnDone.textContent = "✓ Done Answering";
                         btnDone.style.display = "inline-flex";
                     }
                 );
             });
 
-            let isInterviewComplete = false;
-
             wsClient.on("question_evaluated", (data) => {
+                if (data.result && data.result.question_n >= 2) {
+                    showInterviewCompleteUI();
+                    return;
+                }
                 if (isInterviewComplete) return;
                 btnDone.style.display = "none";
                 document.getElementById("question-text").textContent = "Preparing next question...";
@@ -297,14 +332,7 @@
             });
 
             wsClient.on("interview_complete", () => {
-                isInterviewComplete = true;
-                btnDone.style.display = "none";
-                voiceEngine.stop();
-                document.getElementById("question-text").textContent = "Mock Interview Complete!";
-                document.getElementById("live-transcript").innerHTML = `
-                    Thank you for participating. Your integrity report has been generated.<br>
-                    <a href="/report/${sessionId}" target="_blank" class="btn btn-primary" style="margin-top:1rem;">View Audit Report</a>
-                `;
+                showInterviewCompleteUI();
             });
         }
 

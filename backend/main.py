@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +14,7 @@ from backend.models import CreateSessionResponse, QuestionAnalysisResult
 from backend.session_store import session_store, SessionState, QuestionWindow
 from backend.websocket_manager import ws_manager
 from backend.question_engine import question_engine
+from backend.transcription_service import whisper_service
 from backend.analyzers.timing_analyzer import TimingAnalyzer
 from backend.analyzers.gaze_analyzer import GazeAnalyzer
 from backend.analyzers.speech_analyzer import SpeechAnalyzer
@@ -84,6 +85,36 @@ def get_session_report(session_id: str):
     }
 
 
+@app.post("/api/transcribe/{session_id}")
+async def transcribe_candidate_audio(
+    session_id: str,
+    file: UploadFile = File(...)
+):
+    session = session_store.get_session(session_id)
+    if not session and session_store.sessions:
+        logger.info(f"Session '{session_id}' not found directly, falling back to latest session.")
+        session = list(session_store.sessions.values())[-1]
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    audio_bytes = await file.read()
+    logger.info(f"Received audio upload for transcription: {len(audio_bytes)} bytes, filename: {file.filename}")
+    transcript = await whisper_service.transcribe_audio(audio_bytes, filename=file.filename or "answer.webm")
+    logger.info(f"Groq Whisper transcribed text: '{transcript}'")
+
+    # Record into current question window if active
+    if session.current_window and transcript:
+        session.current_window.transcript_chunks.append({
+            "text": transcript,
+            "is_final": True,
+            "ts": time.time(),
+            "word_count": len(transcript.split())
+        })
+
+    return {"status": "ok", "transcript": transcript}
+
+
 @app.get("/report/{session_id}", response_class=HTMLResponse)
 def get_session_report_view(session_id: str):
     session = session_store.get_session(session_id)
@@ -95,21 +126,28 @@ def get_session_report_view(session_id: str):
         badge_class = "risk-clean" if res.risk == "clean" else ("risk-suspicious" if res.risk == "suspicious" else "risk-high")
         delivery_str = res.speech_delivery.replace('_', ' ').title()
         vocal_badge = "style='color:#10b981;'" if res.vocal_style == "expressive" else ("style='color:#f43f5e;'" if res.vocal_style == "monotone_drone" else "style='color:#94a3b8;'")
+        latency_str = f"{res.pause_s}s"
+        if res.stall_detected and res.effective_latency_s > res.pause_s:
+            latency_str = f"{res.pause_s}s<div style='color:#f43f5e;font-size:0.75rem;font-weight:600;'>Eff: {res.effective_latency_s}s (Stalled)</div>"
+        stall_note = f"<span style='color:#f59e0b;font-weight:bold;'>[Stall: \"{res.stall_buffer}\"] </span>" if res.stall_detected else ""
         rows_html += f"""
         <tr class="{badge_class}">
             <td>Q{res.question_n}</td>
             <td><strong>{res.question_text}</strong></td>
-            <td>{res.pause_s}s</td>
+            <td>{latency_str}</td>
             <td><strong>{delivery_str}</strong> ({res.speech_reading_score}/100)</td>
             <td><strong {vocal_badge}>{res.vocal_style.upper().replace('_', ' ')}</strong> ({res.pitch_std:.1f} Hz)</td>
             <td>{res.blur_count} Blurs / {res.fullscreen_exit_count} Exits</td>
             <td>{res.gaze_offscreen_pct}%</td>
             <td>{res.ai_likeness_score}/100</td>
-            <td><span class="badge {badge_class}">{res.risk.upper()}</span></td>
+            <td>
+                <span class="badge {badge_class}">{res.risk.upper()}</span>
+                <div style="font-size:0.75rem;color:#94a3b8;margin-top:4px;font-weight:600;">{getattr(res, 'confidence_pct', 85.0):.0f}% Conf.</div>
+            </td>
             <td><p class="rationale">{res.ai_rationale}</p></td>
         </tr>
         <tr>
-            <td colspan="10" class="transcript-cell"><em>Transcript:</em> "{res.transcript_text or 'No speech recorded'}"</td>
+            <td colspan="10" class="transcript-cell"><em>Transcript:</em> {stall_note}"{res.transcript_text or 'No speech recorded'}"</td>
         </tr>
         """
 
@@ -169,18 +207,32 @@ def get_session_report_view(session_id: str):
 
 
 async def evaluate_question_window(session: SessionState, win: QuestionWindow, full_transcript: str = ""):
-    # 1. Speech Delivery & Timing Analysis (Reading cadence vs spontaneous flow)
+    # 1. Transcript Aggregation (Establish authoritative full transcript first)
+    if not full_transcript:
+        final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
+        full_transcript = " ".join(final_transcripts).strip()
+        if not full_transcript and win.transcript_chunks:
+            full_transcript = win.transcript_chunks[-1].get("text", "").strip()
+
+    word_count = len(full_transcript.split()) if full_transcript else 0
+
+    # 2. Speech Delivery & Timing Analysis (Reading cadence vs spontaneous flow & Stall Detection)
     speech_metrics = SpeechAnalyzer.analyze_speech_delivery(
         question_start_ts=win.start_ts,
         transcript_chunks=win.transcript_chunks,
-        window_end_ts=win.end_ts or time.time()
+        window_end_ts=win.end_ts or time.time(),
+        full_transcript=full_transcript,
+        question_text=win.question_text
     )
     pause_s = speech_metrics.get("prompt_latency_s", 0.0)
+    effective_latency_s = speech_metrics.get("effective_latency_s", pause_s)
     speech_reading_score = speech_metrics.get("reading_cadence_score", 0)
     speech_delivery_label = speech_metrics.get("delivery_style", "spontaneous")
     speech_rationale = speech_metrics.get("rationale", "")
+    stall_detected = speech_metrics.get("stall_detected", False)
+    stall_buffer = speech_metrics.get("stall_buffer", "")
 
-    # 1b. Vocal Prosody & Acoustic Disfluency Analysis
+    # 3. Vocal Prosody & Acoustic Disfluency Analysis
     acoustic_metrics = AcousticAnalyzer.analyze_prosody_and_disfluencies(
         transcript_text=full_transcript,
         acoustic_features=win.acoustic_features
@@ -190,31 +242,18 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow, f
     prosody_score = acoustic_metrics.get("prosody_score", 0)
     prosody_rationale = acoustic_metrics.get("rationale", "")
 
-    # Correlate cadence and acoustic prosody:
-    if vocal_style == "monotone_drone":
-        speech_reading_score = max(speech_reading_score, prosody_score)
-        if speech_delivery_label == "spontaneous":
-            speech_delivery_label = "script_reading"
-        speech_rationale += f" | {prosody_rationale}"
-    elif vocal_style == "expressive":
-        speech_reading_score = max(0, speech_reading_score - 20)
-        speech_rationale += f" | {prosody_rationale}"
+    # Keep speech cadence and acoustic prosody as independent observation channels
+    # Append prosody rationale to speech delivery rationale without overwriting metrics
+    speech_rationale += f" | {prosody_rationale}"
 
-    # 2. Gaze Analysis (Offscreen: Phone in lap / 2nd monitor only)
+    # 4. Gaze Analysis (Offscreen: Phone in lap / 2nd monitor only)
     gaze_offscreen_pct = gaze_analyzer.calculate_offscreen_percentage(win.gaze_samples)
 
-    # 3. Events Analysis (Tab blurs & Fullscreen exits)
+    # 5. Events Analysis (Tab blurs & Fullscreen exits)
     blur_count = sum(1 for e in win.event_samples if e.get("name") in ["tab_blur", "visibility_hidden"])
     fullscreen_exit_count = sum(1 for e in win.event_samples if e.get("name") == "fullscreen_exit")
 
-    # 4. Transcript Aggregation & AI Likeness Scoring
-    if not full_transcript:
-        final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
-        full_transcript = " ".join(final_transcripts).strip()
-        if not full_transcript and win.transcript_chunks:
-            full_transcript = win.transcript_chunks[-1].get("text", "").strip()
-
-    word_count = len(full_transcript.split()) if full_transcript else 0
+    # 6. AI Likeness Scoring with Two-Phase Stall Slicing
     ai_score_val = 0
 
     if word_count < 4:
@@ -227,11 +266,19 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow, f
         ai_result = await ai_scorer.analyze_transcript(full_transcript, win.question_text)
         ai_score_val = ai_result.score
         ai_rationale = ai_result.rationale
+
+        # If AI scorer detected a stall, merge signals
+        if ai_result.stall_detected:
+            stall_detected = True
+            stall_buffer = stall_buffer or ai_result.stall_buffer
+            if ai_result.effective_latency_offset_s > 0:
+                effective_latency_s = max(effective_latency_s, round(pause_s + ai_result.effective_latency_offset_s, 1))
+
         ai_rationale += f" [Vocal & Cadence Delivery] {speech_rationale}"
         if blur_count > 0 or fullscreen_exit_count > 0:
             ai_rationale += f" [Focus Alert] {blur_count} window blur(s), {fullscreen_exit_count} fullscreen exit(s)."
 
-    # 5. Multi-Signal Risk Aggregator
+    # 7. Multi-Signal Risk Aggregator
     risk_label, composite_score, breakdown = RiskAggregator.compute_risk(
         pause_s=pause_s,
         gaze_offscreen_pct=gaze_offscreen_pct,
@@ -242,13 +289,19 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow, f
         prosody_score=prosody_score,
         vocal_style=vocal_style,
         fullscreen_exit_count=fullscreen_exit_count,
-        total_words=word_count
+        total_words=word_count,
+        stall_detected=stall_detected,
+        effective_latency_s=effective_latency_s,
+        stall_buffer=stall_buffer
     )
+
+    confidence_pct = breakdown.get("confidence_pct", 85.0)
 
     analysis_res = QuestionAnalysisResult(
         question_n=win.question_n,
         question_text=win.question_text,
         pause_s=pause_s,
+        effective_latency_s=effective_latency_s,
         gaze_offscreen_pct=gaze_offscreen_pct,
         reading_pct=float(speech_reading_score),
         speech_reading_score=speech_reading_score,
@@ -260,6 +313,9 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow, f
         fullscreen_exit_count=fullscreen_exit_count,
         ai_likeness_score=ai_score_val,
         ai_rationale=ai_rationale,
+        stall_detected=stall_detected,
+        stall_buffer=stall_buffer,
+        confidence_pct=confidence_pct,
         risk=risk_label,
         transcript_text=full_transcript,
         ts=time.time()
@@ -363,11 +419,15 @@ async def websocket_candidate(websocket: WebSocket, session_id: str):
                     win.end_ts = time.time()
                     win.acoustic_features = data.get("acoustic_features", {})
 
-                    # Extract full transcript now so answer_history has it immediately
-                    final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
-                    full_transcript = " ".join(final_transcripts).strip()
-                    if not full_transcript and win.transcript_chunks:
-                        full_transcript = win.transcript_chunks[-1].get("text", "").strip()
+                    # Extract full transcript (prioritizing Groq Whisper authoritative transcript)
+                    whisper_text = data.get("whisper_transcript", "").strip()
+                    if whisper_text:
+                        full_transcript = whisper_text
+                    else:
+                        final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
+                        full_transcript = " ".join(final_transcripts).strip()
+                        if not full_transcript and win.transcript_chunks:
+                            full_transcript = win.transcript_chunks[-1].get("text", "").strip()
 
                     session.answer_history.append(full_transcript)
                     session.current_window = None
@@ -375,9 +435,14 @@ async def websocket_candidate(websocket: WebSocket, session_id: str):
                     import asyncio
                     # Run Grok evaluation in the background without blocking the UI
                     asyncio.create_task(evaluate_question_window(session, win, full_transcript))
-                    # Wait 1.0 second for smooth UI feedback and immediately load next question
-                    await asyncio.sleep(1.0)
-                    await trigger_next_question(session)
+
+                    if session.current_question_n >= MAX_QUESTIONS:
+                        await asyncio.sleep(1.0)
+                        await ws_manager.send_to_candidate(session.session_id, {"type": "interview_complete"})
+                        await ws_manager.send_to_dashboard(session.session_id, {"type": "interview_complete"})
+                    else:
+                        await asyncio.sleep(1.0)
+                        await trigger_next_question(session)
 
     except WebSocketDisconnect:
         logger.info(f"Candidate disconnected from session {session_id}")

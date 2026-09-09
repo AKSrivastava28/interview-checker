@@ -1,6 +1,7 @@
 class IntegrityWebSocketClient {
     constructor(roomId, role) {
         this.roomId = roomId;
+        this.sessionId = roomId; // Ensure sessionId is accessible across capture engine
         this.role = role; // "candidate" or "dashboard"
         this.socket = null;
         this.listeners = {};
