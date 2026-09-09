@@ -23,6 +23,17 @@ class CandidateCapture {
         this.hasSpokenInWindow = false;
         this.lastSpeechTimestamp = 0;
         this.silenceCheckInterval = null;
+
+        // Acoustic Prosody (F0 Pitch) Tracking
+        this.audioContext = null;
+        this.analyserNode = null;
+        this.audioSource = null;
+        this.pitchSamples = [];
+        this.pitchSampleInterval = null;
+
+        // Head pose dynamism / teleprompter freeze tracking
+        this.headPoseSamples = [];
+        this.eyebrowSamples = [];
     }
 
     initConsentModal(onConsentCallback, onCaptureInitialized) {
@@ -58,7 +69,7 @@ class CandidateCapture {
     async startCapture() {
         console.log("[Candidate Capture] Starting passive capture streams...");
 
-        // 1. Setup Camera for MediaPipe Gaze Tracking
+        // 1. Setup Camera & Mic for MediaPipe Gaze & Acoustic Prosody Tracking
         await this.setupMediaPipeGaze();
 
         // 2. Setup Web Speech Recognition
@@ -66,14 +77,25 @@ class CandidateCapture {
 
         // 3. Setup Browser Window Event Listeners
         this.setupWindowListeners();
+
+        // 4. Setup Acoustic Prosody Tracker
+        this.setupAcousticTracker();
     }
 
     async setupMediaPipeGaze() {
         try {
-            this.stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { width: 640, height: 480, facingMode: "user" },
-                audio: false 
-            });
+            try {
+                this.stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 640, height: 480, facingMode: "user" },
+                    audio: true 
+                });
+            } catch (mediaErr) {
+                console.warn("[Candidate Capture] getUserMedia with audio failed, falling back to video only:", mediaErr);
+                this.stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 640, height: 480, facingMode: "user" },
+                    audio: false 
+                });
+            }
             
             const previewVideo = document.getElementById("preview-video");
             const overlayCanvas = document.getElementById("camera-overlay");
@@ -202,8 +224,15 @@ class CandidateCapture {
                         const isEyeDown = eyeDrop > 0.30;
                         const isRollOk = Math.abs(headRoll) <= 0.075;
                         const isGazeCentered = Math.abs(totalHorizGaze) <= 0.095;
-
                         const isFocusedOnScreen = isYawOk && isPitchOk && !isEyeDown && isRollOk && isGazeCentered;
+
+                        // Track head pose & eyebrow dynamism during answer window
+                        if (this.isAnswering) {
+                            this.headPoseSamples.push(headYaw);
+                            const brow1Y = landmarks[105] ? landmarks[105].y : 0;
+                            const eye1Y = landmarks[159] ? landmarks[159].y : 0;
+                            this.eyebrowSamples.push(Math.abs(brow1Y - eye1Y));
+                        }
 
                         // 3. Draw Proctoring Overlay on Canvas
                         if (ctx && overlayCanvas) {
@@ -515,6 +544,151 @@ class CandidateCapture {
         console.log("[Candidate Capture] Window & Fullscreen behavior listeners registered.");
     }
 
+    setupAcousticTracker() {
+        try {
+            const audioTracks = this.stream ? this.stream.getAudioTracks() : [];
+            if (audioTracks.length === 0) {
+                console.warn("[Candidate Capture] No audio track available for acoustic prosody tracking.");
+                return;
+            }
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+
+            this.audioContext = new AudioContextClass();
+            const audioStream = new MediaStream([audioTracks[0]]);
+            this.audioSource = this.audioContext.createMediaStreamSource(audioStream);
+            this.analyserNode = this.audioContext.createAnalyser();
+            this.analyserNode.fftSize = 2048;
+            this.audioSource.connect(this.analyserNode);
+            console.log("[Candidate Capture] Acoustic pitch analyzer connected successfully.");
+        } catch (e) {
+            console.warn("[Candidate Capture] setupAcousticTracker error:", e);
+        }
+    }
+
+    detectFundamentalFrequency(buffer, sampleRate) {
+        const bufferSize = buffer.length;
+        
+        // 1. RMS Energy check to ignore silence or background hum
+        let sumSquares = 0;
+        for (let i = 0; i < bufferSize; i++) {
+            sumSquares += buffer[i] * buffer[i];
+        }
+        const rms = Math.sqrt(sumSquares / bufferSize);
+        if (rms < 0.015) {
+            return null;
+        }
+
+        // Voice fundamental frequency search range: 80 Hz to 450 Hz
+        const minPeriod = Math.floor(sampleRate / 450);
+        const maxPeriod = Math.floor(sampleRate / 80);
+
+        let bestCorrelation = -1;
+        let bestPeriod = -1;
+
+        let energy0 = 0;
+        for (let i = 0; i < bufferSize - maxPeriod; i++) {
+            energy0 += buffer[i] * buffer[i];
+        }
+        if (energy0 < 1e-4) return null;
+
+        for (let lag = minPeriod; lag <= maxPeriod; lag++) {
+            let crossCorr = 0;
+            let energyLag = 0;
+            const len = bufferSize - lag;
+
+            for (let i = 0; i < len; i++) {
+                crossCorr += buffer[i] * buffer[i + lag];
+                energyLag += buffer[i + lag] * buffer[i + lag];
+            }
+
+            const denom = Math.sqrt(energy0 * energyLag);
+            if (denom > 1e-5) {
+                const normCorr = crossCorr / denom;
+                if (normCorr > bestCorrelation) {
+                    bestCorrelation = normCorr;
+                    bestPeriod = lag;
+                }
+            }
+        }
+
+        // Check if periodic signal peak meets confidence (strict threshold to avoid consonants/noise)
+        if (bestCorrelation > 0.78 && bestPeriod > 0) {
+            return sampleRate / bestPeriod;
+        }
+        return null;
+    }
+
+    startPitchTracking() {
+        if (this.pitchSampleInterval) clearInterval(this.pitchSampleInterval);
+        this.pitchSamples = [];
+        if (!this.analyserNode || !this.audioContext) return;
+
+        if (this.audioContext.state === 'suspended') {
+            this.audioContext.resume();
+        }
+
+        const buffer = new Float32Array(this.analyserNode.fftSize);
+
+        this.pitchSampleInterval = setInterval(() => {
+            if (!this.isAnswering) return;
+            this.analyserNode.getFloatTimeDomainData(buffer);
+            const pitch = this.detectFundamentalFrequency(buffer, this.audioContext.sampleRate);
+            if (pitch !== null && pitch >= 75 && pitch <= 450) {
+                this.pitchSamples.push(pitch);
+            }
+        }, 100);
+    }
+
+    stopPitchTracking() {
+        if (this.pitchSampleInterval) {
+            clearInterval(this.pitchSampleInterval);
+            this.pitchSampleInterval = null;
+        }
+
+        const samples = this.pitchSamples || [];
+        if (samples.length < 5) {
+            return {
+                pitch_std: 0.0,
+                mean_pitch: 0.0,
+                pitch_samples_count: samples.length,
+                head_motion_std: 0.015,
+                is_rigid_head: false
+            };
+        }
+
+        // Outlier Rejection: Sort and trim top 15% & bottom 15% (removes octave errors / consonant spikes)
+        const sorted = [...samples].sort((a, b) => a - b);
+        const trimCount = Math.floor(sorted.length * 0.15);
+        const coreSamples = trimCount > 0 ? sorted.slice(trimCount, sorted.length - trimCount) : sorted;
+
+        const mean = coreSamples.reduce((a, b) => a + b, 0) / coreSamples.length;
+        const variance = coreSamples.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / coreSamples.length;
+        const stdDev = Math.sqrt(variance);
+
+        // Head pose stillness / teleprompter freeze calculation
+        let headStd = 0.015;
+        let isRigid = false;
+        if (this.headPoseSamples && this.headPoseSamples.length >= 25) {
+            const hMean = this.headPoseSamples.reduce((a, b) => a + b, 0) / this.headPoseSamples.length;
+            const hVar = this.headPoseSamples.reduce((acc, v) => acc + Math.pow(v - hMean, 2), 0) / this.headPoseSamples.length;
+            headStd = Math.sqrt(hVar);
+            // Conversational speaking has head yaw std dev >= 0.008; reading freeze has std dev < 0.0045
+            if (headStd < 0.0045) {
+                isRigid = true;
+                console.log("[Candidate Capture] Rigid Teleprompter Freeze detected. Head motion std dev:", headStd);
+            }
+        }
+
+        return {
+            pitch_std: Math.round(stdDev * 10) / 10,
+            mean_pitch: Math.round(mean * 10) / 10,
+            pitch_samples_count: coreSamples.length,
+            head_motion_std: Math.round(headStd * 10000) / 10000,
+            is_rigid_head: isRigid
+        };
+    }
+
     setupSilenceDetection() {
         // Run check every 500ms; generous 6.0s thinking window so candidates aren't cut off
         this.silenceCheckInterval = setInterval(() => {
@@ -532,12 +706,15 @@ class CandidateCapture {
         this.isAnswering = true;
         this.hasSpokenInWindow = false;
         this.lastSpeechTimestamp = Date.now();
+        this.headPoseSamples = [];
+        this.eyebrowSamples = [];
         
         // Clear text field
         const transcriptBox = document.getElementById("live-transcript");
         if (transcriptBox) transcriptBox.textContent = "Listening to your response...";
 
         this.startSpeechRecognition();
+        this.startPitchTracking();
     }
 
     triggerDoneAnswering() {
@@ -545,10 +722,14 @@ class CandidateCapture {
         this.isAnswering = false;
 
         this.stopSpeechRecognition();
+        const acousticFeatures = this.stopPitchTracking();
+
+        console.log("[Candidate Capture] Acoustic & Posture summary:", acousticFeatures);
 
         this.wsClient.send({
             type: "done_answering",
-            ts: Date.now() / 1000.0
+            ts: Date.now() / 1000.0,
+            acoustic_features: acousticFeatures
         });
 
         const transcriptBox = document.getElementById("live-transcript");

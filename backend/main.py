@@ -17,6 +17,7 @@ from backend.question_engine import question_engine
 from backend.analyzers.timing_analyzer import TimingAnalyzer
 from backend.analyzers.gaze_analyzer import GazeAnalyzer
 from backend.analyzers.speech_analyzer import SpeechAnalyzer
+from backend.analyzers.acoustic_analyzer import AcousticAnalyzer
 from backend.analyzers.ai_likeness_scorer import AILikenessScorer
 from backend.analyzers.risk_aggregator import RiskAggregator
 
@@ -93,12 +94,14 @@ def get_session_report_view(session_id: str):
     for res in session.question_results:
         badge_class = "risk-clean" if res.risk == "clean" else ("risk-suspicious" if res.risk == "suspicious" else "risk-high")
         delivery_str = res.speech_delivery.replace('_', ' ').title()
+        vocal_badge = "style='color:#10b981;'" if res.vocal_style == "expressive" else ("style='color:#f43f5e;'" if res.vocal_style == "monotone_drone" else "style='color:#94a3b8;'")
         rows_html += f"""
         <tr class="{badge_class}">
             <td>Q{res.question_n}</td>
             <td><strong>{res.question_text}</strong></td>
             <td>{res.pause_s}s</td>
             <td><strong>{delivery_str}</strong> ({res.speech_reading_score}/100)</td>
+            <td><strong {vocal_badge}>{res.vocal_style.upper().replace('_', ' ')}</strong> ({res.pitch_std:.1f} Hz)</td>
             <td>{res.blur_count} Blurs / {res.fullscreen_exit_count} Exits</td>
             <td>{res.gaze_offscreen_pct}%</td>
             <td>{res.ai_likeness_score}/100</td>
@@ -106,7 +109,7 @@ def get_session_report_view(session_id: str):
             <td><p class="rationale">{res.ai_rationale}</p></td>
         </tr>
         <tr>
-            <td colspan="9" class="transcript-cell"><em>Transcript:</em> "{res.transcript_text or 'No speech recorded'}"</td>
+            <td colspan="10" class="transcript-cell"><em>Transcript:</em> "{res.transcript_text or 'No speech recorded'}"</td>
         </tr>
         """
 
@@ -146,6 +149,7 @@ def get_session_report_view(session_id: str):
                         <th>Question</th>
                         <th>Latency</th>
                         <th>Speech Delivery</th>
+                        <th>Vocal Prosody (F₀)</th>
                         <th>Focus & Fullscreen</th>
                         <th>Offscreen Gaze</th>
                         <th>AI Score</th>
@@ -154,7 +158,7 @@ def get_session_report_view(session_id: str):
                     </tr>
                 </thead>
                 <tbody>
-                    {rows_html if rows_html else '<tr><td colspan="9">No question analysis data recorded for this session.</td></tr>'}
+                    {rows_html if rows_html else '<tr><td colspan="10">No question analysis data recorded for this session.</td></tr>'}
                 </tbody>
             </table>
         </div>
@@ -164,7 +168,7 @@ def get_session_report_view(session_id: str):
     return HTMLResponse(content=html)
 
 
-async def evaluate_question_window(session: SessionState, win: QuestionWindow):
+async def evaluate_question_window(session: SessionState, win: QuestionWindow, full_transcript: str = ""):
     # 1. Speech Delivery & Timing Analysis (Reading cadence vs spontaneous flow)
     speech_metrics = SpeechAnalyzer.analyze_speech_delivery(
         question_start_ts=win.start_ts,
@@ -176,6 +180,26 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
     speech_delivery_label = speech_metrics.get("delivery_style", "spontaneous")
     speech_rationale = speech_metrics.get("rationale", "")
 
+    # 1b. Vocal Prosody & Acoustic Disfluency Analysis
+    acoustic_metrics = AcousticAnalyzer.analyze_prosody_and_disfluencies(
+        transcript_text=full_transcript,
+        acoustic_features=win.acoustic_features
+    )
+    pitch_std = acoustic_metrics.get("pitch_std", 0.0)
+    vocal_style = acoustic_metrics.get("vocal_style", "unmeasured")
+    prosody_score = acoustic_metrics.get("prosody_score", 0)
+    prosody_rationale = acoustic_metrics.get("rationale", "")
+
+    # Correlate cadence and acoustic prosody:
+    if vocal_style == "monotone_drone":
+        speech_reading_score = max(speech_reading_score, prosody_score)
+        if speech_delivery_label == "spontaneous":
+            speech_delivery_label = "script_reading"
+        speech_rationale += f" | {prosody_rationale}"
+    elif vocal_style == "expressive":
+        speech_reading_score = max(0, speech_reading_score - 20)
+        speech_rationale += f" | {prosody_rationale}"
+
     # 2. Gaze Analysis (Offscreen: Phone in lap / 2nd monitor only)
     gaze_offscreen_pct = gaze_analyzer.calculate_offscreen_percentage(win.gaze_samples)
 
@@ -184,10 +208,11 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
     fullscreen_exit_count = sum(1 for e in win.event_samples if e.get("name") == "fullscreen_exit")
 
     # 4. Transcript Aggregation & AI Likeness Scoring
-    final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
-    full_transcript = " ".join(final_transcripts).strip()
-    if not full_transcript and win.transcript_chunks:
-        full_transcript = win.transcript_chunks[-1].get("text", "").strip()
+    if not full_transcript:
+        final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
+        full_transcript = " ".join(final_transcripts).strip()
+        if not full_transcript and win.transcript_chunks:
+            full_transcript = win.transcript_chunks[-1].get("text", "").strip()
 
     word_count = len(full_transcript.split()) if full_transcript else 0
     ai_score_val = 0
@@ -202,7 +227,7 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
         ai_result = await ai_scorer.analyze_transcript(full_transcript, win.question_text)
         ai_score_val = ai_result.score
         ai_rationale = ai_result.rationale
-        ai_rationale += f" [Speech Flow] {speech_rationale}"
+        ai_rationale += f" [Vocal & Cadence Delivery] {speech_rationale}"
         if blur_count > 0 or fullscreen_exit_count > 0:
             ai_rationale += f" [Focus Alert] {blur_count} window blur(s), {fullscreen_exit_count} fullscreen exit(s)."
 
@@ -214,6 +239,8 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
         ai_likeness_score=ai_score_val,
         reading_pct=float(speech_reading_score),
         speech_reading_score=speech_reading_score,
+        prosody_score=prosody_score,
+        vocal_style=vocal_style,
         fullscreen_exit_count=fullscreen_exit_count,
         total_words=word_count
     )
@@ -226,6 +253,9 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
         reading_pct=float(speech_reading_score),
         speech_reading_score=speech_reading_score,
         speech_delivery=speech_delivery_label,
+        pitch_std=pitch_std,
+        vocal_style=vocal_style,
+        prosody_score=prosody_score,
         blur_count=blur_count,
         fullscreen_exit_count=fullscreen_exit_count,
         ai_likeness_score=ai_score_val,
@@ -236,7 +266,6 @@ async def evaluate_question_window(session: SessionState, win: QuestionWindow):
     )
 
     session.question_results.append(analysis_res)
-    session.answer_history.append(full_transcript)
 
     # Broadcast results
     await ws_manager.send_to_dashboard(session.session_id, {
@@ -258,8 +287,20 @@ async def trigger_next_question(session: SessionState):
         await ws_manager.send_to_dashboard(session.session_id, {"type": "interview_complete"})
         return
 
-    # Get question instantly from hardcoded list
-    question_text = question_engine.get_question(next_idx)
+    # Check if this is Question 2 (index 1) or later, and candidate answered previous question
+    question_text = ""
+    if next_idx >= 1 and session.question_history and session.answer_history:
+        last_q = session.question_history[-1]
+        last_a = session.answer_history[-1]
+        if last_a and len(last_a.split()) >= 6:
+            logger.info(f"Generating contextual drill-down question based on candidate answer: {last_a[:60]}...")
+            drilldown = await question_engine.generate_drilldown_question(last_q, last_a)
+            if drilldown:
+                question_text = drilldown
+
+    if not question_text:
+        # Fallback to hardcoded list
+        question_text = question_engine.get_question(next_idx)
 
     session.start_new_question(question_text=question_text)
 
@@ -320,10 +361,20 @@ async def websocket_candidate(websocket: WebSocket, session_id: str):
                 if session.current_window:
                     win = session.current_window
                     win.end_ts = time.time()
+                    win.acoustic_features = data.get("acoustic_features", {})
+
+                    # Extract full transcript now so answer_history has it immediately
+                    final_transcripts = [c.get("text", "") for c in win.transcript_chunks if c.get("is_final")]
+                    full_transcript = " ".join(final_transcripts).strip()
+                    if not full_transcript and win.transcript_chunks:
+                        full_transcript = win.transcript_chunks[-1].get("text", "").strip()
+
+                    session.answer_history.append(full_transcript)
                     session.current_window = None
+
                     import asyncio
                     # Run Grok evaluation in the background without blocking the UI
-                    asyncio.create_task(evaluate_question_window(session, win))
+                    asyncio.create_task(evaluate_question_window(session, win, full_transcript))
                     # Wait 1.0 second for smooth UI feedback and immediately load next question
                     await asyncio.sleep(1.0)
                     await trigger_next_question(session)

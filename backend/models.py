@@ -30,6 +30,9 @@ class QuestionAnalysisResult(BaseModel):
     reading_pct: float = 0.0
     speech_reading_score: int = 0
     speech_delivery: str = "spontaneous"  # spontaneous | suspicious_reading | script_reading
+    pitch_std: float = 0.0
+    vocal_style: str = "expressive"       # expressive | monotone_drone | unmeasured
+    prosody_score: int = 0
     blur_count: int
     fullscreen_exit_count: int = 0
     ai_likeness_score: int

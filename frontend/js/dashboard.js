@@ -95,6 +95,12 @@ class ReviewerDashboard {
                         </span>
                     </div>
                     <div class="metric-card">
+                        <label>Vocal Prosody (F₀)</label>
+                        <span style="color: ${result.vocal_style === 'monotone_drone' ? 'var(--color-high)' : (result.vocal_style === 'expressive' ? 'var(--color-clean)' : 'var(--text-secondary)')}; font-size: 0.88rem; font-weight: bold;">
+                            ${(result.vocal_style || 'unmeasured').replace('_', ' ').toUpperCase()} (${result.pitch_std || 0} Hz)
+                        </span>
+                    </div>
+                    <div class="metric-card">
                         <label>Focus & Fullscreen</label>
                         <span style="color: ${(result.blur_count + (result.fullscreen_exit_count || 0)) > 0 ? 'var(--color-suspicious)' : 'var(--color-clean)'}; font-weight: bold;">
                             ${result.blur_count || 0} Blurs / ${result.fullscreen_exit_count || 0} Exits

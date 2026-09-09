@@ -110,10 +110,13 @@ class SpeechAnalyzer:
                 reasons.append(f"Prompt latency gap ({prompt_latency_s}s) followed by immediate recitation")
 
             # Positive Spontaneous Speech Verification:
-            # If cognitive thinking pauses are clearly present (>= 3 pauses or >= 3.5 pauses/min),
-            # this is strong positive physical evidence of spontaneous formulation, not script reading.
-            if cognitive_pauses >= 3 or pauses_per_min >= 3.5:
-                reading_score = max(0, reading_score - 45)
+            # Genuine thinking produces multiple pauses (>= 3 pauses or >= 2 pauses over longer speaking duration)
+            if cognitive_pauses >= 3 or (cognitive_pauses >= 2 and pauses_per_min >= 3.5 and speaking_duration_s >= 12.0):
+                reading_score = max(0, reading_score - 40)
+            elif cognitive_pauses <= 1 and total_words >= 18:
+                # Unbroken continuous recitation
+                reading_score += 25
+                reasons.append(f"Unbroken recitation with only {cognitive_pauses} pause(s) across {total_words} words")
 
         reading_score = min(100, max(0, reading_score))
 

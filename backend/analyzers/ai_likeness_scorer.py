@@ -8,10 +8,10 @@ from backend.models import AILikenessResult
 logger = logging.getLogger("ai_likeness_scorer")
 
 SYSTEM_PROMPT = (
-    "You are an expert interview integrity evaluator. Your job is to assess transcript chunks "
-    "from candidate oral interview answers to detect signs of AI-generated answers read aloud "
-    "(e.g., rigid bullet point structure, overly formal textbook phrasing, perfect syntax without fillers) "
-    "versus natural spontaneous speech."
+    "You are an expert technical interview integrity evaluator. Your job is to assess candidate oral interview transcripts "
+    "to detect signs of AI-generated answers, notes, or textbook definitions recited like a robot "
+    "(e.g., rigid textbook phrasing, verbatim cheat sheet recitation, lack of authentic conversational explanation) "
+    "versus genuine human spontaneous thought."
 )
 
 class AILikenessScorer:
@@ -21,7 +21,7 @@ class AILikenessScorer:
 
     async def analyze_transcript(self, transcript_text: str, question_text: str = "") -> AILikenessResult:
         word_count = len(re.findall(r'\b\w+\b', transcript_text)) if transcript_text else 0
-        if word_count < 15:
+        if word_count < 10:
             return AILikenessResult(
                 score=5,
                 rationale="Response too short for conclusive AI-likeness evaluation."
@@ -31,7 +31,7 @@ class AILikenessScorer:
             try:
                 return await self._call_grok_api(transcript_text, question_text)
             except Exception as e:
-                logger.error(f"Grok API call failed: {e}. Falling back to heuristic analysis.")
+                logger.error(f"Groq API call failed: {e}. Falling back to heuristic analysis.")
                 return self._fallback_heuristic(transcript_text)
         else:
             return self._fallback_heuristic(transcript_text)
@@ -41,11 +41,14 @@ class AILikenessScorer:
             f"Question asked: \"{question_text}\"\n" if question_text else ""
         ) + (
             f"Candidate Transcript: \"{transcript_text}\"\n\n"
-            "Evaluate if this spoken response resembles an AI assistant answer read aloud or natural spontaneous speech.\n"
+            "Evaluate if this spoken response resembles a robotic recitation of a textbook definition / AI notes "
+            "or authentic spontaneous human conversational explanation.\n"
+            "Score high (60-100) if it is a textbook definition or robotic recitation without natural conversational explanation.\n"
+            "Score low (0-35) if it has authentic human conversational formulation or natural thought flow.\n"
             "Respond ONLY with a JSON object in this format:\n"
             "{\n"
             '  "score": <integer 0 to 100>,\n'
-            '  "rationale": "<1 sentence explanation>"\n'
+            '  "rationale": "<1 concise sentence explanation>"\n'
             "}"
         )
 
@@ -54,12 +57,12 @@ class AILikenessScorer:
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "grok-beta",
+            "model": "qwen/qwen3.8-27b",
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.2,
+            "temperature": 0.1,
             "response_format": {"type": "json_object"}
         }
 

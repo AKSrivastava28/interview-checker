@@ -10,6 +10,7 @@ class QuestionWindow:
         self.gaze_samples: List[dict] = []
         self.transcript_chunks: List[dict] = []
         self.event_samples: List[dict] = []
+        self.acoustic_features: dict = {}
         self.end_ts: Optional[float] = None
 
 class SessionState:

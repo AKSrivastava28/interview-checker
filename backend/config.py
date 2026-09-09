@@ -13,7 +13,7 @@ if not dotenv_path.exists():
 load_dotenv(dotenv_path=dotenv_path)
 
 GROK_API_KEY = os.getenv("GROK_API_KEY", "")
-GROK_API_BASE = os.getenv("GROK_API_BASE", "https://api.x.ai/v1")
+GROK_API_BASE = os.getenv("GROK_API_BASE", "https://api.groq.com/openai/v1")
 
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
 SESSION_SECRET = os.getenv("SESSION_SECRET", "super_secret_interview_integrity_key")

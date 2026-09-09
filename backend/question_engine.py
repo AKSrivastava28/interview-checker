@@ -50,7 +50,7 @@ class QuestionEngine:
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "grok-beta",
+                "model": "qwen/qwen3.8-27b",
                 "messages": messages,
                 "temperature": 0.7
             }
@@ -65,6 +65,50 @@ class QuestionEngine:
             logger.error(f"Failed to generate dynamic question with Grok: {e}. Falling back to default list.")
             next_idx = len(question_history)
             return self.get_question(next_idx)
+
+    async def generate_drilldown_question(self, last_question: str, last_answer: str) -> str:
+        """
+        Calls Grok to generate an immediate conversational drill-down follow-up question
+        based specifically on the technical points the candidate just stated.
+        """
+        if not self.api_key or len(last_answer.split()) < 5:
+            return ""
+
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert technical interviewer in a live senior engineering interview. "
+                        "The candidate just provided an answer. Ask an immediate, unscripted follow-up question "
+                        "that specifically drills down into a technical detail, trade-off, or architectural choice they just made. "
+                        "Keep it to exactly one direct question without preamble or praise. Do not say 'Great answer' or 'Thank you'."
+                    )
+                },
+                {"role": "assistant", "content": last_question},
+                {"role": "user", "content": last_answer}
+            ]
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "qwen/qwen3.8-27b",
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 80
+            }
+
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.post(f"{self.api_base}/chat/completions", headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                drilldown = data["choices"][0]["message"]["content"].strip()
+                logger.info(f"Generated conversational drilldown follow-up: {drilldown}")
+                return drilldown
+        except Exception as e:
+            logger.warning(f"Failed to generate drilldown question: {e}")
+            return ""
 
 # Global singleton
 question_engine = QuestionEngine()
