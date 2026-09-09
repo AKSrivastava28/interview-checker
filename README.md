@@ -170,7 +170,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
-## 🧪 Verification & Automated Test Suites
+## Verification & Automated Test Suites
 
 The codebase includes end-to-end regression and edge-case verification test suites located in `scratch/`:
 
@@ -195,7 +195,7 @@ python scratch/test_edge_cases_and_confidence.py
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 interview-checker/
@@ -226,6 +226,6 @@ interview-checker/
 
 ---
 
-## 🛡️ License & Responsible Use
+## License & Responsible Use
 
 This software is developed as an interview integrity research prototype. It is designed to assist human interviewers by providing objective, multi-modal behavioral telemetry. Automated integrity classifications are meant to be used as decision-support signals alongside human reviewer oversight.\n
